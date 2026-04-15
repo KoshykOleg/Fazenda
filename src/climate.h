@@ -5,9 +5,6 @@
 #include <Arduino.h>
 #include "config.h"
 
-// === FORWARD DECLARATIONS ===
-struct DataLogger;  // ← ДОДАНО
-
 // === СТРУКТУРА СТАНУ КЛІМАТ-СИСТЕМИ ===
 struct ClimateState {
     // Налаштування (з Preferences)

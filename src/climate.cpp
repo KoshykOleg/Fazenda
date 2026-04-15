@@ -2,31 +2,16 @@
 #include "climate.h"
 #include "display.h"
 #include <DHT.h>
+#include "logger.h"
 
 // === ЗОВНІШНІ ОБ'ЄКТИ (з main.cpp) ===
 extern DHT dht;
-
-// === СТРУКТУРА ЛОГЕРА (forward declaration в climate.h) ===
-struct DataLogger {
-    bool storageAvailable;
-    int dht_errors;
-    int coldlock_events;
-    int overheat_events;
-};
 
 extern DataLogger logger;
 
 // === ЗОВНІШНІ ФУНКЦІЇ (з main.cpp) ===
 extern void logEvent(const char* eventType, const char* details);
 extern void logFanChangeEvent(int oldCh, int newCh, float temp);
-
-// === ПІНИ ===
-#define RELAY_CH1_PIN 14
-#define RELAY_CH2_PIN 27
-#define RELAY_CH3_PIN 26
-#define RELAY_CH4_PIN 32
-#define RELAY_HEAT_PIN 19
-#define LIGHT_SENSOR_PIN 34
 
 // === КОНСТАНТИ ===
 #define RELAY_SWITCH_DELAY 150
@@ -240,7 +225,7 @@ void runClimateControl(ClimateState* state) {
 
     // === ОБРОБКА ПОМИЛКИ DHT ===
     if (isnan(h) || isnan(t)) {
-        state->dhtRetryCount++;
+        if (state->dhtRetryCount < 100) state->dhtRetryCount++;
         Serial.printf("[DHT ERROR] count: %d\n", state->dhtRetryCount);
 
         if (state->dhtRetryCount == 1) {

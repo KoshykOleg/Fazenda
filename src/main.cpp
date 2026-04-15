@@ -1,11 +1,11 @@
-// Версія 2.5.0 - Climate module refactoring
+// main.cpp
 #define BLYNK_TEMPLATE_ID "TMPL47MHSCoFY"
 #define BLYNK_TEMPLATE_NAME "Fazenda"
 
 #include "secrets.h"
 #include "config.h"
 #include "display.h"
-#include "climate.h"  // ← НОВИЙ МОДУЛЬ
+#include "climate.h"
 #include <Arduino.h>
 #include <WiFi.h>
 #include <BlynkSimpleEsp32.h>
@@ -22,6 +22,7 @@
 #include <ESPAsyncWebServer.h>
 #include "webui.h"
 #include <time.h>
+#include "logger.h"
 
 // === FORWARD DECLARATIONS ===
 void initTime();
@@ -35,44 +36,11 @@ void cleanOldLogs();
 void checkPreferences();
 void setupWebServer();
 
-// --- ПІНИ ---
-#define TFT_CS     5
-#define TFT_RST    15 
-#define TFT_DC     2
-#define TFT_MOSI   23
-#define TFT_SCLK   22 
-
-#define RELAY_CH1_PIN 14  
-#define RELAY_CH2_PIN 27  
-#define RELAY_CH3_PIN 26   
-#define RELAY_CH4_PIN 32
-#define RELAY_HEAT_PIN 19  
-#define DHTPIN 4           
-#define DHTTYPE DHT22 
-#define LIGHT_SENSOR_PIN 34 
-
 // === TIMING КОНСТАНТИ ===
 const long CLIMATE_CHECK_INTERVAL = 10000;
 const unsigned long PREF_WRITE_DELAY = 5000;
 
-// === СТРУКТУРА ЛОГЕРА ===
-struct DataLogger {
-    bool storageAvailable = false;
-    unsigned long lastPeriodicLog = 0;
-    unsigned long lastEventLog = 0;
-    const unsigned long PERIODIC_INTERVAL = 120000;
-    const unsigned long LOG_RETENTION_DAYS = 7;
-    
-    int ch1_activations = 0;
-    int ch2_activations = 0;
-    int ch3_activations = 0;
-    int ch4_activations = 0;
-    int overheat_events = 0;
-    int dht_errors = 0;
-    int coldlock_events = 0;
-    
-    int lastLoggedChannel = -1;
-} logger;
+DataLogger logger;
 
 // --- ОБ'ЄКТИ ---
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
@@ -273,10 +241,15 @@ void resetBootDiagnostics() {
 
 void checkBlynkStatus() {
     if (WiFi.status() == WL_CONNECTED) {
-        if (!Blynk.connected()) Blynk.connect(3000);
+        if (!Blynk.connected()) {
+            esp_task_wdt_reset();
+            Blynk.connect(3000);
+            esp_task_wdt_reset();
+        }
     } else {
         static unsigned long lastWiFiRetry = 0;
         if (millis() - lastWiFiRetry > 30000) {
+            esp_task_wdt_reset();
             WiFi.begin(WIFI_SSID, WIFI_PASS);
             lastWiFiRetry = millis();
             Serial.println("WiFi lost. Retrying...");
@@ -740,9 +713,8 @@ void setup() {
     Serial.println("====================================\n");
 
     setupWebServer();
-}
 
-/*
+    
     // === ВИВЕСТИ ЛОГ У SERIAL ===
     if (logger.storageAvailable) {
         delay(1000);
@@ -758,7 +730,7 @@ void setup() {
             Serial.println("[ERROR] Could not open /climate.log");
         }
     } 
-*/
+}
 
 void loop() {
     esp_task_wdt_reset();
@@ -787,10 +759,14 @@ void loop() {
     static AutoCycle lastShownCycle = outNormal;
     static bool lastShownSystemOn = true;
 
+    bool tChanged = (isnan(climate.lastValidT) != isnan(lastShownT)) || 
+                    (!isnan(climate.lastValidT) && fabsf(climate.lastValidT - lastShownT) > 0.05);
+    bool hChanged = (isnan(climate.lastValidH) != isnan(lastShownH)) || 
+                    (!isnan(climate.lastValidH) && fabsf(climate.lastValidH - lastShownH) > 0.5);
+
     if (climate.currentActiveChannel != lastShownFan || 
         climate.currentHeatState != lastShownHeat ||
-        fabsf(climate.lastValidT - lastShownT) > 0.05 ||
-        fabsf(climate.lastValidH - lastShownH) > 0.5 ||
+        tChanged || hChanged ||
         climate.isDay != lastShownDay ||
         climate.activeCycle != lastShownCycle ||
         climate.systemOn != lastShownSystemOn) {
@@ -817,10 +793,13 @@ void loop() {
 
     // === NTP RETRY ===
     static unsigned long lastNtpRetry = 0;
+
     if (!timeInitialized && WiFi.status() == WL_CONNECTED && 
         millis() - lastNtpRetry > 60000) {
         Serial.println("[NTP] Retrying time sync...");
+        esp_task_wdt_reset();
         initTime();
+        esp_task_wdt_reset();
         lastNtpRetry = millis();
     }
 
