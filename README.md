@@ -1,46 +1,64 @@
-# 🌱 Fazenda Climate Control
+# Fazenda Climate Control
 
-Система автоматичного кліматконтролю на базі ESP32 з веб-інтерфейсом та OTA оновленнями.
+Система автоматичного клімат-контролю для теплиці на базі ESP32 з веб-інтерфейсом та OTA оновленнями.
 
-## ⚡ Можливості
+## Можливості
 
-- 🌡️ Моніторинг температури та вологості (DHT22)
-- 💨 4-канальне управління вентиляцією
-- 🔥 Автоматичний обігрів
-- 📊 TFT дисплей ST7735 (1.8")
-- 🌐 Веб-інтерфейс для OTA прошивки
-- 📝 SPIFFS логування з NTP часом
-- 📱 Інтеграція з Blynk
-- 🔍 Діагностика перезавантажень
+- Моніторинг температури та вологості (DHT22)
+- 4-канальне управління вентиляцією з кікстартом
+- Автоматичні цикли (outCold / outNormal / outHot)
+- Захист від переохолодження (ColdLock)
+- Автоматичне перемикання День/Ніч (фоторезистор)
+- TFT дисплей ST7735 1.8" з анімацією каналів
+- Веб-інтерфейс: OTA прошивка, перегляд логів, статус JSON
+- SPIFFS логування з NTP часом (ротація файлів)
+- Інтеграція з Blynk IoT
+- Діагностика перезавантажень у Flash
 
-## 🛠️ Обладнання
+## Обладнання
 
-- ESP32 DevKit
-- DHT22 (температура/вологість)
-- ST7735 TFT дисплей 1.8"
-- 4-канальний модуль реле
-- Фоторезистор (датчик світла)
-- Силові реле для обігріву
+| Компонент | Підключення |
+|-----------|-------------|
+| ESP32 DevKit | — |
+| DHT22 | GPIO 4 |
+| ST7735 TFT 1.8" | CS=5, DC=2, RST=15, MOSI=23, SCLK=22 |
+| Реле CH1–CH4 | GPIO 14, 27, 26, 32 |
+| Реле обігрів | GPIO 19 |
+| Фоторезистор | GPIO 34 |
 
-## 📦 Встановлення
+## Структура проекту
+
+```
+src/
+├── main.cpp        — setup(), loop(), BLYNK_WRITE handlers
+├── climate.cpp/h   — логіка клімат-контролю, state machine
+├── display.cpp/h   — TFT дисплей, анімації
+├── logger.cpp/h    — SPIFFS логування, NTP змінні, getTimestamp
+├── network.cpp/h   — initTime (NTP), setupWebServer (OTA + /logs)
+├── config.h        — піни, константи, DBG макрос
+├── webui.h         — HTML сторінки
+└── secrets.h       — credentials (не в репо)
+```
+
+## Встановлення
 
 1. Клонуй репозиторій:
 ```bash
-git clone https://github.com/KoshykOleg/fazenda-climate.git
-cd fazenda-climate
+git clone https://github.com/KoshykOleg/Fazenda.git
+cd Fazenda
 ```
 
-2. Створи `src/secrets.h` з `secrets.example.h`:
+2. Створи `src/secrets.h` з шаблону:
 ```bash
 cp src/secrets.example.h src/secrets.h
 ```
 
-3. Відредагуй `src/secrets.h`:
+3. Заповни `src/secrets.h`:
 ```cpp
-#define WIFI_SSID "твій_wifi"
-#define WIFI_PASS "твій_пароль"
+#define WIFI_SSID       "твій_wifi"
+#define WIFI_PASS       "твій_пароль"
 #define BLYNK_AUTH_TOKEN "твій_токен_blynk"
-#define OTA_PASSWORD "пароль_для_ота"
+#define OTA_PASSWORD    "пароль_для_ота"
 ```
 
 4. Завантаж прошивку:
@@ -48,115 +66,143 @@ cp src/secrets.example.h src/secrets.h
 pio run -t upload
 ```
 
-## 🌐 Веб-інтерфейс
+## Веб-інтерфейс
+
+### API Endpoints
+```
+GET  /        — Сторінка входу
+POST /login   — Авторизація (password)
+GET  /logout  — Вихід
+GET  /update  — Сторінка OTA
+POST /update  — Завантаження firmware (.bin)
+GET  /status  — JSON статус системи
+GET  /logs    — Перегляд логів + статистика
+```
 
 ### OTA оновлення
-1. Відкрий `http://192.168.0.100/`
+1. Відкрий `http://<IP пристрою>/`
 2. Введи OTA пароль
-3. Завантаж `.bin` файл з `.pio/build/esp32dev/`
+3. Завантаж `.bin` з `.pio/build/esp32dev/firmware.bin`
 
-### Перегляд логів
-- `http://192.168.0.100/logs`
-
-### Очищення логів
-- Serial Monitor → `C` + Enter
-
-## 📊 API Endpoints
-```
-GET  /              - Сторінка входу
-POST /login         - Авторізація
-GET  /logout        - Вихід
-GET  /update        - Сторінка OTA
-POST /update        - Завантаження firmware
-GET  /status        - JSON статус системи
-GET  /logs          - Перегляд логів
+### JSON статус (`/status`)
+```json
+{"temp":23.4,"hum":61.0,"fan":2,"mode":"DAY"}
 ```
 
-## 📝 Формат логів
+## Логування
+
+### Формат запису
 ```
 2026-04-01 21:33:23 50,23.0,62.1,3,0,DAY,FAN_CHANGE:CH0->CH3
 ```
 
-**Розшифровка:**
-- `2026-04-01 21:33:23` — дата/час (NTP)
-- `50` — uptime (секунди)
-- `23.0` — температура (°C)
-- `62.1` — вологість (%)
-- `3` — активний канал вентилятора
-- `0` — обігрів (0/1)
-- `DAY` — режим (DAY/NIGHT)
-- `FAN_CHANGE:CH0->CH3` — подія
+| Поле | Опис |
+|------|------|
+| `2026-04-01 21:33:23` | Дата/час (NTP) або `[uptime s]` до синхронізації |
+| `50` | Uptime (секунди) |
+| `23.0` | Температура (°C) |
+| `62.1` | Вологість (%) |
+| `3` | Активний канал вентилятора (0–4) |
+| `0` | Обігрів (0/1) |
+| `DAY` / `NIGHT` | Режим роботи |
+| `FAN_CHANGE:CH0->CH3` | Подія |
 
-## 🔧 Налаштування
+### Типи подій
+- `BOOT` — запуск системи
+- `BOOT_CYCLE` — вибір початкового циклу
+- `FAN_CHANGE` — зміна каналу вентилятора
+- `OVERHEAT` — перший старт при перегрітому повітрі
+- `COLDLOCK` — активація/деактивація захисту від холоду
+- `CYCLE_CHANGE` — зміна автоциклу (outCold/outNormal/outHot)
+- `MODE_CHANGE` — перехід DAY↔NIGHT
+- `DHT_ERROR` — помилка датчика
 
-### Константи логіки
-```cpp
-COLDLOCK_TEMP_LOW     18.0°C  // Холодне блокування
-NIGHT_TEMP_OFFSET     4.0°C   // Зсув температури вночі
-CLIMATE_CHECK_INTERVAL 10 сек // Інтервал читання DHT
+### Очищення логів
+Serial Monitor → надіслати символ `C`
+
+### Ротація
+Файл `/climate.log` обрізається до 50 КБ при перевищенні 100 КБ.
+
+## Налаштування
+
+### Пороги логіки (climate.cpp)
+```
+COLDLOCK_TEMP_LOW     18.0°C  — поріг активації ColdLock
+COLDLOCK_TEMP_HIGH    19.5°C  — поріг деактивації ColdLock
+NIGHT_TEMP_OFFSET      4.0°C  — зсув цільової температури вночі
+NIGHT_TEMP_HYSTERESIS  0.5°C  — гістерезис нічного обігріву
+```
+
+### Пороги День/Ніч (climate.cpp)
+```
+lightVal > 2500  — перехід у нічний режим
+lightVal < 1500  — перехід у денний режим
+```
+
+### Інтервали (main.cpp)
+```
+CLIMATE_CHECK_INTERVAL  10 000 мс — читання DHT та оновлення логіки
+PREF_WRITE_DELAY         5 000 мс — затримка запису налаштувань у Flash
+PERIODIC_INTERVAL      120 000 мс — інтервал periodical-логу (logger.h)
 ```
 
 ### Управління через Blynk
-- **V5** - Цільова температура
-- **V6** - Цільова вологість
-- **V0** - Manual Boost (CH4)
-- **V10** - Система ON/OFF
-- **V13** - Offset температури
+| Pin | Функція | Напрямок |
+|-----|---------|----------|
+| V0 | Manual Boost (CH4) | вхід |
+| V1 | Температура | вихід |
+| V2 | Вологість | вихід |
+| V3 | Активний канал | вихід |
+| V4 | Стан обігріву | вихід |
+| V5 | Цільова температура | вхід |
+| V6 | Цільова вологість | вхід |
+| V7 | День (1/0) | вихід |
+| V8 | Ніч (1/0) | вихід |
+| V9 | ColdLock активний | вихід |
+| V10 | Система ON/OFF | вхід |
+| V11 | Помилка DHT | вихід |
+| V13 | Offset температури (×10) | вхід |
+| V14 | Offset відображення | вихід |
+| V15 | Гістерезис (×10) | вхід |
 
-## 📈 Статистика
+## Діагностика
 
-Логи зберігають:
-- Активації каналів (CH1-4)
-- Події перегріву
-- Помилки DHT22
-- Активації coldlock
-
-## 🐛 Діагностика
-
-### Boot Diagnostics
+### Boot Diagnostics (Serial)
+При кожному завантаженні виводить:
 - Лічильник перезавантажень
-- Останні значення температури/вологості
 - Попередній uptime
-- Помилки датчика
+- Останні T/H, канал, offset, помилки DHT
 
-### Скинути лічильник:
+### Скинути лічильник
 Розкоментуй у `setup()`:
 ```cpp
 resetBootDiagnostics();
 ```
 
-## 🔐 Безпека
+### Debug-вивід
+У `config.h` перемкни:
+```cpp
+#define DEBUG_CLIMATE 1   // 1 = увімкнено, 0 = вимкнено
+```
 
-- Авторізація для OTA
-- `.gitignore` для `secrets.h`
-- Паролі не зберігаються в репозиторії
+## Безпека
 
-## 📡 Мережеві налаштування
+- Авторизація за паролем для OTA та `/logs`
+- `secrets.h` у `.gitignore`, не потрапляє в репо
+- Паролі тільки в `secrets.h`
 
-- **IP:** 192.168.0.100 (статичний)
-- **Порт:** 80 (веб-сервер)
-- **Blynk:** blynk.cloud:80
+## Залежності
 
-## 📚 Залежності
 ```ini
-lib_deps = 
+lib_deps =
     https://github.com/mathieucarbou/ESPAsyncWebServer#v3.3.15
     mathieucarbou/AsyncTCP@^3.2.14
     blynkkk/Blynk@^1.3.2
     adafruit/DHT sensor library@^1.4.6
     adafruit/Adafruit ST7735 and ST7789 Library@^1.10.4
+    adafruit/Adafruit GFX Library@^1.11.9
 ```
 
-## 📄 Ліцензія
+## Автор
 
-MIT License - вільне використання та модифікація
-
-## 👨‍💻 Автор
-
-KoshykOleg - [GitHub](https://github.com/KoshykOleg/fazenda-climate)
-
-## 🙏 Подяки
-
-- Anthropic Claude за допомогу в розробці
-- ESP32 community
-- Blynk team
+KoshykOleg — [GitHub](https://github.com/KoshykOleg)
