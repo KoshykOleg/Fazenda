@@ -58,4 +58,15 @@ enum AutoCycle {
 // === TIMING АНІМАЦІЇ ===
 #define CHANNEL_ANIM_DELAY 70
 
+// === DEBUG МАКРОС ===
+#define DEBUG_CLIMATE 1  // 1=debug ON, 0=debug OFF
+
+#if DEBUG_CLIMATE
+  #define DBG(fmt, ...) Serial.printf(fmt, ##__VA_ARGS__)
+  #define DBG_PRINTLN(msg) Serial.println(msg)
+#else
+  #define DBG(fmt, ...)
+  #define DBG_PRINTLN(msg)
+#endif
+
 #endif // CONFIG_H

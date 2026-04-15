@@ -2,13 +2,10 @@
 #include "display.h"
 #include <Arduino.h>
 
-// Зовнішні глобальні змінні з main.cpp
 extern Adafruit_ST7735 tft;
 
-// Глобальна змінна анімації
 ChannelAnimation channelAnim;
 
-// Змінні для відстеження змін
 static float oldT = -99.9;
 static float oldH = -1.0;
 static int oldDisplayedChannel = -1;
@@ -19,7 +16,6 @@ static AutoCycle oldCycle = outNormal;
 static bool oldSystemOn = true;
 
 // === ДОПОМІЖНІ ФУНКЦІЇ ===
-
 int getChannelX(int channelNum) {
     if (channelNum < 1 || channelNum > 4) return 0;
     
@@ -82,7 +78,6 @@ void drawCycleArrows(AutoCycle cycle, bool isDayMode) {
     int arrowNormalX = ch2x + CHANNEL_WIDTH + offset;
     int arrowHotX = ch3x + CHANNEL_WIDTH + offset;
     
-    // Малюємо ВСІ 3 трикутники (активний яскравий, решта темно-сірі)
     drawFilledTriangle(arrowColdX, ARROWS_Y, ARROW_SIZE, 
                        (cycle == outCold) ? ARROW_COLD : C_DARK_GRAY);
     
@@ -186,7 +181,6 @@ void updateDisplayNew(float t, float h, int channel, bool isDay,
             tft.setCursor(startX, 18);
             tft.print("T: ERR");
         } else {
-            char tempStr[16];
             int approxWidth = 126;
             int startX = (160 - approxWidth) / 2;
             
@@ -204,7 +198,7 @@ void updateDisplayNew(float t, float h, int channel, bool isDay,
         oldT = t;
     }
 
-    // 2. ВОЛОГІСТЬ (центрована)
+    // 2. ВОЛОГІСТЬ
     if (fabsf(h - oldH) > 0.5 || isnan(h) != isnan(oldH)) {
         tft.fillRect(0, 48, 160, 24, ST77XX_BLACK);
         
@@ -223,7 +217,7 @@ void updateDisplayNew(float t, float h, int channel, bool isDay,
             tft.setCursor(startX, 48);
             tft.printf("H:%d%%", (int)h);
         }
-        oldH = (int)h;
+        oldH = h;
     }
     
     // 3. СТРІЛОЧКИ ЦИКЛІВ

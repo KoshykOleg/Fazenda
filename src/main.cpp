@@ -58,7 +58,7 @@ const long gmtOffset_sec = 2 * 3600;
 const int daylightOffset_sec = 0;
 bool timeInitialized = false;
 
-// === КЛІМАТ-СТАН (замість всіх глобальних змінних) ===
+// === КЛІМАТ-СТАН ===
 ClimateState climate;
 
 // === ІНШІ ГЛОБАЛЬНІ ЗМІННІ ===
@@ -290,23 +290,15 @@ void initTime() {
 }
 
 String getTimestamp() {
-    if (!timeInitialized) {
-        Serial.println("[NTP] First attempt failed, retrying...");
-        esp_task_wdt_reset();
-        delay(3000);
-        esp_task_wdt_reset();
-        initTime();
-    }
-    
     struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) {
-        unsigned long uptime = millis() / 1000;
-        return "[" + String(uptime) + "s]";
+    if (timeInitialized && getLocalTime(&timeinfo)) {
+        char buffer[64];
+        strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &timeinfo);
+        return String(buffer);
     }
     
-    char buffer[64];
-    strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &timeinfo);
-    return String(buffer);
+    unsigned long uptime = millis() / 1000;
+    return "[" + String(uptime) + "s]";
 }
 
 // === ВЕБ-СЕРВЕР ===

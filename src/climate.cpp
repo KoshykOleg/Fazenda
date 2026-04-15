@@ -53,8 +53,9 @@ void climateInit(ClimateState* state) {
     state->manualBoost = false;
     
     state->dhtRetryCount = 0;
+    state->bootCycleSelected = false;
     
-    Serial.println("[CLIMATE] Module initialized");
+    DBG_PRINTLN("[CLIMATE] Module initialized");
 }
 
 // === ОБРОБКА ЧЕРГИ РЕЛЕ ===
@@ -81,7 +82,7 @@ void handleRelayQueue(ClimateState* state) {
 void setFanChannel(ClimateState* state, int channel) {
     if (channel == 0) {
         state->kickstartActive = false;
-        Serial.println("[setFanChannel] Turning OFF");
+        DBG_PRINTLN("[setFanChannel] Turning OFF");
     }
 
     if (channel != 0 && state->currentActiveChannel == channel && 
@@ -115,7 +116,7 @@ void startFanWithKick(ClimateState* state, int targetChannel) {
         state->kickstartActive = true;
         state->kickstartTime = millis();
         state->targetChannelAfterKick = targetChannel;
-        Serial.printf("[KICK] CH4 → target CH%d\n", targetChannel);
+        DBG("[KICK] CH4 → target CH%d\n", targetChannel);
     } 
     else {
         setFanChannel(state, targetChannel);
@@ -133,17 +134,17 @@ void selectCycleOnBoot(ClimateState* state, float t) {
     if (t <= state->set_temp_day - 1.0) {
         state->activeCycle = outCold;
         state->autoOffset = 0.5;
-        Serial.println("[BOOT] Cycle: outCold (+0.5)");
+        DBG_PRINTLN("[BOOT] Cycle: outCold (+0.5)");
     } 
     else if (t <= state->set_temp_day + 0.5) {
         state->activeCycle = outNormal;
         state->autoOffset = 0.0;
-        Serial.println("[BOOT] Cycle: outNormal (0.0)");
+        DBG_PRINTLN("[BOOT] Cycle: outNormal (0.0)");
     } 
     else {
         state->activeCycle = outHot;
         state->autoOffset = -0.5;
-        Serial.println("[BOOT] Cycle: outHot (-0.5)");
+        DBG_PRINTLN("[BOOT] Cycle: outHot (-0.5)");
     }
     
     if (logger.storageAvailable) {
@@ -199,7 +200,7 @@ void checkCycleTransition(ClimateState* state, int newChannel) {
         
         state->lastCycleChangeTime = now;
         
-        Serial.printf("[CYCLE] %s → %s (CH%d, offset: %.1f)\n", 
+        DBG("[CYCLE] %s → %s (CH%d, offset: %.1f)\n", 
             oldName, newName, newChannel, state->autoOffset);
         
         if (logger.storageAvailable) {
@@ -215,19 +216,19 @@ void checkCycleTransition(ClimateState* state, int newChannel) {
 void runClimateControl(ClimateState* state) {
     if (state->kickstartActive) return;
 
-    Serial.printf(">>> runClimate: set_temp=%.2f offset=%.2f\n", 
+    DBG(">>> runClimate: set_temp=%.2f offset=%.2f\n", 
         state->set_temp_day, state->tempOffset);
 
     unsigned long readStart = millis();
-    float h = dht.readHumidity();
     float t = dht.readTemperature();
+    float h = dht.readHumidity();
     int lightVal = analogRead(LIGHT_SENSOR_PIN);
-    Serial.printf("DHT read: %lu ms\n", millis() - readStart);
+    DBG("DHT read: %lu ms\n", millis() - readStart);
 
     // === ОБРОБКА ПОМИЛКИ DHT ===
     if (isnan(h) || isnan(t)) {
         if (state->dhtRetryCount < 100) state->dhtRetryCount++;
-        Serial.printf("[DHT ERROR] count: %d\n", state->dhtRetryCount);
+        DBG("[DHT ERROR] count: %d\n", state->dhtRetryCount);
 
         if (state->dhtRetryCount == 1) {
             logger.dht_errors++;
@@ -243,11 +244,11 @@ void runClimateControl(ClimateState* state) {
         
         if (state->systemOn) {
             if (state->currentActiveChannel == 0) {
-                Serial.println("[DHT ERROR] OFF → Kick → CH3");
+                DBG_PRINTLN("[DHT ERROR] OFF → Kick → CH3");
                 startFanWithKick(state, 3);
             } 
             else if (state->currentActiveChannel != 3 && state->pendingChannel != 3) {
-                Serial.printf("[DHT ERROR] CH%d → CH3\n", state->currentActiveChannel);
+                DBG("[DHT ERROR] CH%d → CH3\n", state->currentActiveChannel);
                 setFanChannel(state, 3);
             }
             heatControl(state, false);
@@ -258,7 +259,7 @@ void runClimateControl(ClimateState* state) {
 
     // DHT OK
     if (state->dhtRetryCount > 0) {
-        Serial.printf("[DHT OK] recovered after %d errors\n", state->dhtRetryCount);
+        DBG("[DHT OK] recovered after %d errors\n", state->dhtRetryCount);
     }
     state->dhtRetryCount = 0;
     state->lastValidT = t;
@@ -274,10 +275,10 @@ void runClimateControl(ClimateState* state) {
         if (state->isDay) {
             state->activeCycle = outNormal;
             state->autoOffset = 0.0;
-            Serial.println("[MODE] NIGHT → DAY: Reset to outNormal");
+            DBG_PRINTLN("[MODE] NIGHT → DAY: Reset to outNormal");
             logEvent("MODE_CHANGE", "NIGHT→DAY, cycle=outNormal");
         } else {
-            Serial.printf("[MODE] DAY → NIGHT: autoOffset %.1f cleared\n", state->autoOffset);
+            DBG("[MODE] DAY → NIGHT: autoOffset %.1f cleared\n", state->autoOffset);
             state->autoOffset = 0.0;
             state->activeCycle = outNormal;
             state->bootCycleSelected = false;
@@ -334,12 +335,12 @@ void runClimateControl(ClimateState* state) {
         float T4 = (state->set_temp_day + 0.5) + finalOffset;
         float T_OFF = state->set_temp_day - 1.0;
 
-        Serial.printf("[DAY] T:%.1f | Cycle:%s | auto:%.1f | user:%.1f | CH:%d\n",
+        DBG("[DAY] T:%.1f | Cycle:%s | auto:%.1f | user:%.1f | CH:%d\n",
             t, 
             state->activeCycle == outCold ? "COLD" : 
             state->activeCycle == outNormal ? "NORM" : "HOT",
             state->autoOffset, state->tempOffset, state->currentActiveChannel);
-        Serial.printf("[DAY] T1=%.1f T2=%.1f T3=%.1f T4=%.1f | OFF<%.1f\n",
+        DBG("[DAY] T1=%.1f T2=%.1f T3=%.1f T4=%.1f | OFF<%.1f\n",
             T1, T2, T3, T4, T_OFF);
         
         // STATE MACHINE
@@ -400,7 +401,7 @@ void runClimateControl(ClimateState* state) {
         // === НІЧНА ЛОГІКА ===
         float T_OFF_NIGHT = nightTargetT - 1.0;
         
-        Serial.printf("[NIGHT] T:%.1f H:%.1f | Lim:%.1f | CH:%d\n",
+        DBG("[NIGHT] T:%.1f H:%.1f | Lim:%.1f | CH:%d\n",
             t, h, state->set_hum_limit, state->currentActiveChannel);
         
         if (state->currentActiveChannel == 0) {
@@ -423,7 +424,7 @@ void runClimateControl(ClimateState* state) {
             else if (h >= state->set_hum_limit) nextFanChannel = 2;
             else nextFanChannel = 1;
             
-            Serial.printf("[NIGHT] WARNING: Unexpected CH%d\n", state->currentActiveChannel);
+            DBG("[NIGHT] WARNING: Unexpected CH%d\n", state->currentActiveChannel);
         }
     }
 
@@ -435,7 +436,7 @@ void runClimateControl(ClimateState* state) {
     if (!state->kickstartActive) {
         if (nextFanChannel == 0) {
             if (state->currentActiveChannel != 0) {
-                Serial.printf("[FAN OFF] T=%.1f, was CH%d\n", t, state->currentActiveChannel);
+                DBG("[FAN OFF] T=%.1f, was CH%d\n", t, state->currentActiveChannel);
                 logFanChangeEvent(state->currentActiveChannel, 0, t);
                 setFanChannel(state, 0);
                 
@@ -456,13 +457,13 @@ void runClimateControl(ClimateState* state) {
 
     // Лог
     if (state->isDay) {
-        Serial.printf("[%.1f] T:%.1f(%.1f) H:%.1f | Fan:%d | Heat:%d | DAY | %s\n",
+        DBG("[%.1f] T:%.1f(%.1f) H:%.1f | Fan:%d | Heat:%d | DAY | %s\n",
             millis()/1000.0, t, state->set_temp_day + state->tempOffset + state->autoOffset, 
             h, state->currentActiveChannel, state->currentHeatState,
             state->activeCycle == outCold ? "COLD" : 
             state->activeCycle == outNormal ? "NORM" : "HOT");
     } else {
-        Serial.printf("[%.1f] T:%.1f(%.1f) H:%.1f | Fan:%d | Heat:%d | NIGHT\n",
+        DBG("[%.1f] T:%.1f(%.1f) H:%.1f | Fan:%d | Heat:%d | NIGHT\n",
             millis()/1000.0, t, state->set_temp_day + state->tempOffset, 
             h, state->currentActiveChannel, state->currentHeatState);
     }
