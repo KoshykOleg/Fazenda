@@ -204,24 +204,28 @@ void cleanOldLogs() {
     if (fileSize > 100000) {
         Serial.println("[SPIFFS] Log file too large, rotating...");
         
-        file = SPIFFS.open("/climate.log", FILE_READ);
-        if (!file) return;
+        File src = SPIFFS.open("/climate.log", FILE_READ);
+        if (!src) return;
+        src.seek(fileSize - 50000);
         
-        file.seek(fileSize - 50000); 
+        File dst = SPIFFS.open("/climate.tmp", FILE_WRITE);
+        if (!dst) { src.close(); return; }
         
-        String newContent = "";
-        while (file.available()) {
-            newContent += (char)file.read();
+        dst.println("=== LOG ROTATED ===");
+        
+        uint8_t buf[256];
+        while (src.available()) {
+            esp_task_wdt_reset();
+            size_t bytesRead = src.read(buf, sizeof(buf));
+            dst.write(buf, bytesRead);
         }
-        file.close();
+        src.close();
+        dst.close();
         
-        file = SPIFFS.open("/climate.log", FILE_WRITE);
-        if (file) {
-            file.println("=== LOG ROTATED ===");
-            file.print(newContent);
-            file.close();
-            Serial.println("[SPIFFS] Log rotation complete");
-        }
+        SPIFFS.remove("/climate.log");
+        SPIFFS.rename("/climate.tmp", "/climate.log");
+        
+        Serial.println("[SPIFFS] Log rotation complete");
     }
 }
 
@@ -266,6 +270,7 @@ void initTime() {
     int attempts = 0;
     
     while (!getLocalTime(&timeinfo) && attempts < 10) {
+        esp_task_wdt_reset();
         delay(500);
         Serial.print(".");
         attempts++;
@@ -286,8 +291,11 @@ void initTime() {
 
 String getTimestamp() {
     if (!timeInitialized) {
-        unsigned long uptime = millis() / 1000;
-        return "[" + String(uptime) + "s]";
+        Serial.println("[NTP] First attempt failed, retrying...");
+        esp_task_wdt_reset();
+        delay(3000);
+        esp_task_wdt_reset();
+        initTime();
     }
     
     struct tm timeinfo;
@@ -402,29 +410,46 @@ void setupWebServer() {
             request->send(500, "text/plain", "SPIFFS not available");
             return;
         }
+
+        String stats = "=== FAZENDA CLIMATE LOGS ===\n\n";
+        stats += "STATISTICS:\n";
+        stats += "CH1 activations: " + String(logger.ch1_activations) + "\n";
+        stats += "CH2 activations: " + String(logger.ch2_activations) + "\n";
+        stats += "CH3 activations: " + String(logger.ch3_activations) + "\n";
+        stats += "CH4 activations: " + String(logger.ch4_activations) + "\n";
+        stats += "Overheat events: " + String(logger.overheat_events) + "\n";
+        stats += "DHT errors: " + String(logger.dht_errors) + "\n";
+        stats += "Coldlock events: " + String(logger.coldlock_events) + "\n\n";
+        stats += "=== LOG ENTRIES ===\n";
+
+        AsyncWebServerResponse *response = request->beginChunkedResponse(
+            "text/plain",
+            [stats](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
+                static File logFile;
+                
+                if (index < stats.length()) {
+                    size_t toCopy = min(maxLen, stats.length() - index);
+                    memcpy(buffer, stats.c_str() + index, toCopy);
+                    return toCopy;
+                }
+                
+                size_t fileIndex = index - stats.length();
+                
+                if (fileIndex == 0) {
+                    logFile = SPIFFS.open("/climate.log", FILE_READ);
+                    if (!logFile) return 0;
+                }
+                
+                if (!logFile || !logFile.available()) {
+                    if (logFile) logFile.close();
+                    return 0;
+                }
+                
+                return logFile.read(buffer, maxLen);
+            }
+        );
         
-        File file = SPIFFS.open("/climate.log", FILE_READ);
-        if (!file) {
-            request->send(404, "text/plain", "Log file not found");
-            return;
-        }
-        
-        String content = file.readString();
-        file.close();
-        
-        String response = "=== FAZENDA CLIMATE LOGS ===\n\n";
-        response += "STATISTICS:\n";
-        response += "CH1 activations: " + String(logger.ch1_activations) + "\n";
-        response += "CH2 activations: " + String(logger.ch2_activations) + "\n";
-        response += "CH3 activations: " + String(logger.ch3_activations) + "\n";
-        response += "CH4 activations: " + String(logger.ch4_activations) + "\n";
-        response += "Overheat events: " + String(logger.overheat_events) + "\n";
-        response += "DHT errors: " + String(logger.dht_errors) + "\n";
-        response += "Coldlock events: " + String(logger.coldlock_events) + "\n\n";
-        response += "=== LOG ENTRIES ===\n";
-        response += content;
-        
-        request->send(200, "text/plain", response);
+        request->send(response);
     });
     
     server.onNotFound([](AsyncWebServerRequest *request){
@@ -441,6 +466,7 @@ void checkPreferences() {
         pref.putFloat("hum", climate.set_hum_limit);
         pref.putFloat("offset", climate.tempOffset);
         pref.putFloat("hyst", climate.hysteresis);
+        pref.putBool("sysOn", climate.systemOn);
         prefChanged = false;
         Serial.println("Settings saved to Flash!");
     }
@@ -490,6 +516,12 @@ BLYNK_WRITE(V0) {
             climate.manualBoost ? "ON" : "OFF", newBoost ? "ON" : "OFF");
     }
     
+    if (newBoost && !climate.systemOn) {
+        Serial.println("[V0] Boost ignored — system OFF");
+        Blynk.virtualWrite(V0, 0);
+        return;
+    }
+    
     climate.manualBoost = newBoost;
     
     if (climate.manualBoost) {
@@ -502,7 +534,8 @@ BLYNK_WRITE(V0) {
 
 BLYNK_WRITE(V10) {
     climate.systemOn = (param.asInt() == 1);
-    pref.putBool("sysOn", climate.systemOn);
+    prefChanged = true;
+    lastPrefChangeTime = millis();
     
     Serial.printf("[V10] System: %s\n", climate.systemOn ? "ON" : "OFF");
     
@@ -514,6 +547,7 @@ BLYNK_WRITE(V10) {
         if (climate.isDay) {
             climate.activeCycle = outNormal;
             climate.autoOffset = 0.0;
+            climate.bootCycleSelected = false;
             Serial.println("[V10] Cycle reset to outNormal");
         }
     }
@@ -595,11 +629,11 @@ void setup() {
     tft.setRotation(1);
     drawStaticUI(); 
 
-    digitalWrite(RELAY_CH1_PIN, HIGH); pinMode(RELAY_CH1_PIN, OUTPUT);
-    digitalWrite(RELAY_CH2_PIN, HIGH); pinMode(RELAY_CH2_PIN, OUTPUT);
-    digitalWrite(RELAY_CH3_PIN, HIGH); pinMode(RELAY_CH3_PIN, OUTPUT);
-    digitalWrite(RELAY_CH4_PIN, HIGH); pinMode(RELAY_CH4_PIN, OUTPUT);
-    digitalWrite(RELAY_HEAT_PIN, HIGH); pinMode(RELAY_HEAT_PIN, OUTPUT);
+    pinMode(RELAY_CH1_PIN, OUTPUT);  digitalWrite(RELAY_CH1_PIN, HIGH);
+    pinMode(RELAY_CH2_PIN, OUTPUT);  digitalWrite(RELAY_CH2_PIN, HIGH);
+    pinMode(RELAY_CH3_PIN, OUTPUT);  digitalWrite(RELAY_CH3_PIN, HIGH);
+    pinMode(RELAY_CH4_PIN, OUTPUT);  digitalWrite(RELAY_CH4_PIN, HIGH);
+    pinMode(RELAY_HEAT_PIN, OUTPUT); digitalWrite(RELAY_HEAT_PIN, HIGH);
 
     dht.begin();
     delay(2000);
@@ -860,4 +894,3 @@ void loop() {
         }
     }
 }
-// Версія 2.5.0

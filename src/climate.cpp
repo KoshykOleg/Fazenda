@@ -1,4 +1,4 @@
-// climate.cpp - Реалізація логіки клімат-контролю
+// climate.cpp
 #include "climate.h"
 #include "display.h"
 #include <DHT.h>
@@ -10,7 +10,7 @@ extern DHT dht;
 extern DataLogger logger;
 
 // === ЗОВНІШНІ ФУНКЦІЇ (з main.cpp) ===
-extern void logEvent(const char* eventType, const char* details);
+extern void logEvent(const char* eventType, const char* details = "");
 extern void logFanChangeEvent(int oldCh, int newCh, float temp);
 
 // === КОНСТАНТИ ===
@@ -159,6 +159,7 @@ void selectCycleOnBoot(ClimateState* state, float t) {
 // === ПЕРЕМИКАННЯ ЦИКЛІВ ===
 void checkCycleTransition(ClimateState* state, int newChannel) {
     if (!state->isDay) return;
+    if (newChannel == 0) return;
     
     unsigned long now = millis();
     if (state->lastCycleChangeTime > 0 && 
@@ -277,6 +278,9 @@ void runClimateControl(ClimateState* state) {
             logEvent("MODE_CHANGE", "NIGHT→DAY, cycle=outNormal");
         } else {
             Serial.printf("[MODE] DAY → NIGHT: autoOffset %.1f cleared\n", state->autoOffset);
+            state->autoOffset = 0.0;
+            state->activeCycle = outNormal;
+            state->bootCycleSelected = false;
             logEvent("MODE_CHANGE", "DAY→NIGHT");
         }
     }
@@ -354,10 +358,9 @@ void runClimateControl(ClimateState* state) {
                     nextFanChannel = (t >= state->set_temp_day + 0.6) ? 4 : 3;
                 }
 
-                static bool bootCycleSelected = false;
-                if (!bootCycleSelected) {
+                if (!state->bootCycleSelected) {
                     selectCycleOnBoot(state, t);
-                    bootCycleSelected = true;
+                    state->bootCycleSelected = true;
                 }
             } else {
                 nextFanChannel = 0;

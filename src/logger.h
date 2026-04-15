@@ -1,4 +1,4 @@
-// logger.h - Структура логера (спільна для main.cpp та climate.cpp)
+// logger.h
 #ifndef LOGGER_H
 #define LOGGER_H
 

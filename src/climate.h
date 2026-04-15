@@ -1,4 +1,4 @@
-// climate.h - Модуль керування кліматом
+// climate.h
 #ifndef CLIMATE_H
 #define CLIMATE_H
 
@@ -43,6 +43,7 @@ struct ClimateState {
     
     // Діагностика
     int dhtRetryCount = 0;
+    bool bootCycleSelected = false;
 };
 
 // === ІНІЦІАЛІЗАЦІЯ ===

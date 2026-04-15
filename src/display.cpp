@@ -1,4 +1,4 @@
-// display.cpp - Реалізація функцій дисплея
+// display.cpp
 #include "display.h"
 #include <Arduino.h>
 
@@ -10,7 +10,7 @@ ChannelAnimation channelAnim;
 
 // Змінні для відстеження змін
 static float oldT = -99.9;
-static int oldH = -1;
+static float oldH = -1.0;
 static int oldDisplayedChannel = -1;
 static bool oldTooCold = false;
 static bool oldHeat = false;
@@ -182,26 +182,21 @@ void updateDisplayNew(float t, float h, int channel, bool isDay,
         tft.setTextColor(C_ORANGE, ST77XX_BLACK);
         
         if (isnan(t)) {
-            // "T: ERR" = 6 символів * 18px = 108px
             int startX = (160 - 108) / 2;
             tft.setCursor(startX, 18);
             tft.print("T: ERR");
         } else {
-            // Формуємо рядок з градусом
             char tempStr[16];
-            // Для 1 десяткової цифри: T:23.8°C = ~7 символів
-            // Приблизна ширина = 7 * 18 = 126px
             int approxWidth = 126;
             int startX = (160 - approxWidth) / 2;
             
             tft.setCursor(startX, 18);
             tft.printf("T:%.1f", t);
             
-            // Додаємо градус та C
             int curX = tft.getCursorX();
             tft.setTextSize(1);
             tft.setCursor(curX + 1, 18);
-            tft.print("o");  // Маленький кружечок як градус
+            tft.print("o");
             tft.setTextSize(3);
             tft.setCursor(curX + 7, 18);
             tft.print("C");
@@ -217,14 +212,10 @@ void updateDisplayNew(float t, float h, int channel, bool isDay,
         tft.setTextColor(C_CYAN, ST77XX_BLACK);
         
         if (isnan(h)) {
-            // "H: ERR" = 6 символів * 18px = 108px
             int startX = (160 - 108) / 2;
             tft.setCursor(startX, 48);
             tft.print("H: ERR");
         } else {
-            // H:37% = ~5 символів (може бути H:100% = 6)
-            // Приблизна ширина для 2-значного числа = 5 * 18 = 90px
-            // Для 3-значного (100%) = 6 * 18 = 108px
             int digits = (int)h >= 100 ? 6 : 5;
             int approxWidth = digits * 18;
             int startX = (160 - approxWidth) / 2;

@@ -1,4 +1,4 @@
-// display.h - Функції для роботи з TFT дисплеєм
+// display.h 
 #ifndef DISPLAY_H
 #define DISPLAY_H
 
