@@ -1,8 +1,0 @@
-#ifndef SECRETS_H
-#define SECRETS_H
-
-#define WIFI_SSID "WIFI"
-#define WIFI_PASS "LOGIN"
-#define BLYNK_AUTH_TOKEN "TOKEN"
-
-#endif
