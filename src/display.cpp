@@ -245,13 +245,14 @@ void updateDisplayNew(float t, float h, int channel, bool isDay,
             oldSystemOn = true;
         }
         
-        if (channel != oldDisplayedChannel && !channelAnim.active) {
+        bool channelChanged = (channel != oldDisplayedChannel);
+        if (channelChanged && !channelAnim.active) {
             startChannelAnimation(oldDisplayedChannel, channel);
             oldDisplayedChannel = channel;
         }
-        
+
         // 5. ІНДИКАТОРИ
-        if (coldLock != oldTooCold || heat != oldHeat || channel != oldDisplayedChannel) {
+        if (coldLock != oldTooCold || heat != oldHeat || channelChanged) {
             drawIndicators(coldLock, heat, channel);
             oldTooCold = coldLock;
             oldHeat = heat;

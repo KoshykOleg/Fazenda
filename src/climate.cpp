@@ -7,12 +7,6 @@
 // === ЗОВНІШНІ ОБ'ЄКТИ (з main.cpp) ===
 extern DHT dht;
 
-extern DataLogger logger;
-
-// === ЗОВНІШНІ ФУНКЦІЇ (з main.cpp) ===
-extern void logEvent(const char* eventType, const char* details = "");
-extern void logFanChangeEvent(int oldCh, int newCh, float temp);
-
 // === КОНСТАНТИ ===
 #define RELAY_SWITCH_DELAY 150
 #define KICKSTART_DURATION 5000
@@ -362,6 +356,8 @@ void runClimateControl(ClimateState* state) {
                 if (!state->bootCycleSelected) {
                     selectCycleOnBoot(state, t);
                     state->bootCycleSelected = true;
+                    logger.overheat_events++;
+                    logEvent("OVERHEAT", "Started with high temp");
                 }
             } else {
                 nextFanChannel = 0;
@@ -388,13 +384,6 @@ void runClimateControl(ClimateState* state) {
             if (t < T_OFF) nextFanChannel = 0;
             else if (t <= (T4 - state->hysteresis)) nextFanChannel = 3;
             else nextFanChannel = 4;
-        }
-        else {
-            nextFanChannel = (t >= state->set_temp_day) ? 3 : 0;
-            if (state->currentActiveChannel == 0 && t >= state->set_temp_day) {
-                logger.overheat_events++;
-                logEvent("OVERHEAT", "Started with high temp");
-            }
         }
     }
     else {

@@ -14,7 +14,7 @@
 #include "DHT.h"
 #include <Preferences.h>
 #include <esp_task_wdt.h>
-#include <Adafruit_GFX.h>    
+#include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
 #include <SPIFFS.h>
 #include <Update.h>
@@ -23,40 +23,23 @@
 #include "webui.h"
 #include <time.h>
 #include "logger.h"
+#include "network.h"
 
 // === FORWARD DECLARATIONS ===
-void initTime();
-String getTimestamp();
-bool initSPIFFS();
-void logToFile(const char* message);
-void logPeriodicData();
-void logFanChangeEvent(int oldCh, int newCh, float temp);
-void logEvent(const char* eventType, const char* message);
-void cleanOldLogs();
 void checkPreferences();
-void setupWebServer();
+void checkBlynkStatus();
+void sendPeriodicData();
+void pushChangesToBlynk();
 
 // === TIMING КОНСТАНТИ ===
 const long CLIMATE_CHECK_INTERVAL = 10000;
 const unsigned long PREF_WRITE_DELAY = 5000;
-
-DataLogger logger;
 
 // --- ОБ'ЄКТИ ---
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
 DHT dht(DHTPIN, DHTTYPE);
 Preferences pref;
 BlynkTimer timer;
-
-// === ВЕБ-СЕРВЕР ===
-AsyncWebServer server(80);
-bool isAuthenticated = false;
-
-// === ЧАС ===
-const char* ntpServer = "pool.ntp.org";
-const long gmtOffset_sec = 2 * 3600;      
-const int daylightOffset_sec = 0;
-bool timeInitialized = false;
 
 // === КЛІМАТ-СТАН ===
 ClimateState climate;
@@ -65,184 +48,10 @@ ClimateState climate;
 unsigned long lastReadTime = 0;
 bool prefChanged = false;
 unsigned long lastPrefChangeTime = 0;
+bool blynkSyncPending = false;
+unsigned long blynkSyncAt = 0;
 
-// === SPIFFS ЛОГУВАННЯ ===
-bool initSPIFFS() {
-    if (!SPIFFS.begin(true)) {
-        Serial.println("[SPIFFS] Mount failed!");
-        return false;
-    }
-    
-    size_t totalBytes = SPIFFS.totalBytes();
-    size_t usedBytes = SPIFFS.usedBytes();
-    
-    Serial.printf("[SPIFFS] Total: %u, Used: %u, Free: %u bytes\n", 
-        totalBytes, usedBytes, totalBytes - usedBytes);
-    
-    if (!SPIFFS.exists("/climate.log")) {
-        File file = SPIFFS.open("/climate.log", FILE_WRITE);
-        if (file) {
-            file.println("=== FAZENDA CLIMATE LOG ===");
-            file.println("Timestamp,Temp,Hum,Fan,Heat,Mode,Event");
-            file.close();
-            Serial.println("[SPIFFS] Log file created");
-        }
-    }
-    
-    return true;
-}
-
-void logToFile(const char* message) {
-    if (!logger.storageAvailable) return;
-    
-    File file = SPIFFS.open("/climate.log", FILE_APPEND);
-    if (!file) {
-        Serial.println("[SPIFFS] Failed to open log file");
-        return;
-    }
-
-    String timestamp = getTimestamp();
-    file.printf("%s %s\n", timestamp.c_str(), message);
-    file.close();
-}
-
-void logPeriodicData() {
-    if (!logger.storageAvailable) return;
-    
-    unsigned long now = millis();
-    if (now - logger.lastPeriodicLog < logger.PERIODIC_INTERVAL) return;
-    
-    logger.lastPeriodicLog = now;
-
-    char logLine[256];
-    
-    if (climate.isDay) {
-        const char* cycleName = (climate.activeCycle == outCold) ? "COLD" : 
-                                (climate.activeCycle == outNormal) ? "NORM" : "HOT";
-        snprintf(logLine, sizeof(logLine), 
-            "%lu,%.1f,%.1f,%d,%d,DAY,%s,autoOff=%.1f,PERIODIC",
-            now / 1000,
-            climate.lastValidT,
-            climate.lastValidH,
-            climate.currentActiveChannel,
-            climate.currentHeatState ? 1 : 0,
-            cycleName,
-            climate.autoOffset
-        );
-    } else {
-        snprintf(logLine, sizeof(logLine), 
-            "%lu,%.1f,%.1f,%d,%d,NIGHT,PERIODIC",
-            now / 1000,
-            climate.lastValidT,
-            climate.lastValidH,
-            climate.currentActiveChannel,
-            climate.currentHeatState ? 1 : 0
-        );
-    }
-    
-    logToFile(logLine);
-}
-
-void logFanChangeEvent(int oldChannel, int newChannel, float temp) {
-    if (!logger.storageAvailable) return;
-    
-    if (newChannel == 1) logger.ch1_activations++;
-    else if (newChannel == 2) logger.ch2_activations++;
-    else if (newChannel == 3) logger.ch3_activations++;
-    else if (newChannel == 4) logger.ch4_activations++;
-    
-    char logLine[200];
-    snprintf(logLine, sizeof(logLine),
-        "%lu,%.1f,%.1f,%d,%d,%s,FAN_CHANGE:CH%d->CH%d",
-        millis() / 1000,
-        temp,
-        climate.lastValidH,
-        newChannel,
-        climate.currentHeatState ? 1 : 0,
-        climate.isDay ? "DAY" : "NIGHT",
-        oldChannel,
-        newChannel
-    );
-    
-    logToFile(logLine);
-    
-    Serial.printf("[LOGGER] Fan: CH%d → CH%d (Stats: CH1=%d CH2=%d CH3=%d CH4=%d)\n",
-        oldChannel, newChannel, 
-        logger.ch1_activations, logger.ch2_activations, 
-        logger.ch3_activations, logger.ch4_activations);
-}
-
-void logEvent(const char* eventType, const char* details = "") {
-    if (!logger.storageAvailable) return;
-    
-    char logLine[200];
-    snprintf(logLine, sizeof(logLine),
-        "%lu,%.1f,%.1f,%d,%d,%s,%s%s%s",
-        millis() / 1000,
-        climate.lastValidT,
-        climate.lastValidH,
-        climate.currentActiveChannel,
-        climate.currentHeatState ? 1 : 0,
-        climate.isDay ? "DAY" : "NIGHT",
-        eventType,
-        strlen(details) > 0 ? ":" : "",
-        details
-    );
-    
-    logToFile(logLine);
-}
-
-void cleanOldLogs() {
-    if (!logger.storageAvailable) return;
-    
-    File file = SPIFFS.open("/climate.log", FILE_READ);
-    if (!file) return;
-    
-    size_t fileSize = file.size();
-    file.close();
-    
-    if (fileSize > 100000) {
-        Serial.println("[SPIFFS] Log file too large, rotating...");
-        
-        File src = SPIFFS.open("/climate.log", FILE_READ);
-        if (!src) return;
-        src.seek(fileSize - 50000);
-        
-        File dst = SPIFFS.open("/climate.tmp", FILE_WRITE);
-        if (!dst) { src.close(); return; }
-        
-        dst.println("=== LOG ROTATED ===");
-        
-        uint8_t buf[256];
-        while (src.available()) {
-            esp_task_wdt_reset();
-            size_t bytesRead = src.read(buf, sizeof(buf));
-            dst.write(buf, bytesRead);
-        }
-        src.close();
-        dst.close();
-        
-        SPIFFS.remove("/climate.log");
-        SPIFFS.rename("/climate.tmp", "/climate.log");
-        
-        Serial.println("[SPIFFS] Log rotation complete");
-    }
-}
-
-// --- СИСТЕМНІ ФУНКЦІЇ ---
-void resetBootDiagnostics() {
-    pref.putUInt("bootCnt", 0);
-    pref.putFloat("lastT", NAN);
-    pref.putInt("lastCh", 0);
-    pref.putFloat("lastOff", 0.0);
-    pref.putUInt("lastErr", 0);
-    pref.putULong("lastUp", 0);
-    
-    Serial.println("\n=== BOOT DIAGNOSTICS RESET ===");
-    Serial.println("All counters cleared!");
-    Serial.println("==============================\n");
-}
-
+// === BLYNK МЕРЕЖЕВІ ФУНКЦІЇ ===
 void checkBlynkStatus() {
     if (WiFi.status() == WL_CONNECTED) {
         if (!Blynk.connected()) {
@@ -261,195 +70,62 @@ void checkBlynkStatus() {
     }
 }
 
-// === ІНІЦІАЛІЗАЦІЯ ЧАСУ ===
-void initTime() {
-    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-    
-    Serial.print("[NTP] Waiting for time sync");
-    struct tm timeinfo;
-    int attempts = 0;
-    
-    while (!getLocalTime(&timeinfo) && attempts < 10) {
-        esp_task_wdt_reset();
-        delay(500);
-        Serial.print(".");
-        attempts++;
-    }
-    
-    if (attempts < 10) {
-        Serial.println(" OK");
-        Serial.printf("[NTP] Current time: %02d:%02d:%02d %02d.%02d.%04d\n",
-            timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec,
-            timeinfo.tm_mday, timeinfo.tm_mon + 1, timeinfo.tm_year + 1900);
-        timeInitialized = true;
-    } else {
-        Serial.println(" FAILED");
-        Serial.println("[NTP] Will continue without real time");
-        timeInitialized = false;
+void sendPeriodicData() {
+    if (Blynk.connected() && !isnan(climate.lastValidT)) {
+        Blynk.virtualWrite(V1, climate.lastValidT);
+        Blynk.virtualWrite(V2, climate.lastValidH);
     }
 }
 
-String getTimestamp() {
-    struct tm timeinfo;
-    if (timeInitialized && getLocalTime(&timeinfo)) {
-        char buffer[64];
-        strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &timeinfo);
-        return String(buffer);
+void pushChangesToBlynk() {
+    static int lastSentFan = -1;
+    static int lastSentHeat = -1;
+    static bool lastSentTooCold = false;
+    static bool lastSentDHTErr = false;
+    static bool lastSentDayStatus = true;
+
+    if (!Blynk.connected()) return;
+
+    if (climate.currentActiveChannel != lastSentFan) {
+        Blynk.virtualWrite(V3, climate.currentActiveChannel);
+        lastSentFan = climate.currentActiveChannel;
     }
-    
-    unsigned long uptime = millis() / 1000;
-    return "[" + String(uptime) + "s]";
+
+    if (climate.currentHeatState != (lastSentHeat == 1)) {
+        Blynk.virtualWrite(V4, climate.currentHeatState ? 1 : 0);
+        lastSentHeat = climate.currentHeatState ? 1 : 0;
+    }
+
+    if (climate.isDay != lastSentDayStatus) {
+        Blynk.virtualWrite(V7, climate.isDay ? 1 : 0);
+        Blynk.virtualWrite(V8, climate.isDay ? 0 : 1);
+        lastSentDayStatus = climate.isDay;
+    }
+
+    if (climate.tooColdLock != lastSentTooCold) {
+        Blynk.virtualWrite(V9, climate.tooColdLock ? 1 : 0);
+        lastSentTooCold = climate.tooColdLock;
+    }
+
+    bool dhtErr = (climate.dhtRetryCount >= 3);
+    if (dhtErr != lastSentDHTErr) {
+        Blynk.virtualWrite(V11, dhtErr ? 1 : 0);
+        lastSentDHTErr = dhtErr;
+    }
 }
 
-// === ВЕБ-СЕРВЕР ===
-void setupWebServer() {
-    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
-        request->send(200, "text/html", HTML_LOGIN);
-    });
-    
-    server.on("/login", HTTP_POST, [](AsyncWebServerRequest *request){
-        if (request->hasParam("password", true)) {
-            String password = request->getParam("password", true)->value();
-            if (password == String(OTA_PASSWORD)) {
-                isAuthenticated = true;
-                request->send(200, "text/plain", "OK");
-            } else {
-                request->send(401, "text/plain", "Wrong password");
-            }
-        } else {
-            request->send(400, "text/plain", "Missing password");
-        }
-    });
-    
-    server.on("/logout", HTTP_GET, [](AsyncWebServerRequest *request){
-        isAuthenticated = false;
-        request->redirect("/");
-    });
-    
-    server.on("/update", HTTP_GET, [](AsyncWebServerRequest *request){
-        if (!isAuthenticated) {
-            request->redirect("/");
-            return;
-        }
-        request->send(200, "text/html", HTML_UPDATE);
-    });
-    
-    server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request){
-        if (!isAuthenticated) {
-            request->send(401, "text/plain", "Unauthorized");
-            return;
-        }
-        
-        String json = "{";
-        json += "\"temp\":" + String(climate.lastValidT, 1) + ",";
-        json += "\"hum\":" + String(climate.lastValidH, 1) + ",";
-        json += "\"fan\":" + String(climate.currentActiveChannel) + ",";
-        json += "\"mode\":\"" + String(climate.isDay ? "DAY" : "NIGHT") + "\"";
-        json += "}";
-        
-        request->send(200, "application/json", json);
-    });
-    
-    server.on("/update", HTTP_POST, 
-        [](AsyncWebServerRequest *request){
-            if (!isAuthenticated) {
-                request->send(401, "text/plain", "Unauthorized");
-                return;
-            }
-            
-            bool shouldReboot = !Update.hasError();
-            AsyncWebServerResponse *response = request->beginResponse(200, "text/plain", 
-                shouldReboot ? "OK" : "FAIL");
-            response->addHeader("Connection", "close");
-            request->send(response);
-            
-            if (shouldReboot) {
-                delay(1000);
-                ESP.restart();
-            }
-        },
-        [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final){
-            if (!isAuthenticated) return;
-            
-            if (!index) {
-                Serial.printf("OTA Update Start: %s\n", filename.c_str());
-                if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
-                    Update.printError(Serial);
-                }
-            }
-            
-            if (Update.write(data, len) != len) {
-                Update.printError(Serial);
-            }
-            
-            if (final) {
-                if (Update.end(true)) {
-                    Serial.printf("OTA Update Success: %u bytes\n", index + len);
-                } else {
-                    Update.printError(Serial);
-                }
-            }
-        }
-    );
-    
-    server.on("/logs", HTTP_GET, [](AsyncWebServerRequest *request){
-        if (!isAuthenticated) {
-            request->send(401, "text/plain", "Unauthorized");
-            return;
-        }
-        
-        if (!logger.storageAvailable) {
-            request->send(500, "text/plain", "SPIFFS not available");
-            return;
-        }
+// --- СИСТЕМНІ ФУНКЦІЇ ---
+void resetBootDiagnostics() {
+    pref.putUInt("bootCnt", 0);
+    pref.putFloat("lastT", NAN);
+    pref.putInt("lastCh", 0);
+    pref.putFloat("lastOff", 0.0);
+    pref.putUInt("lastErr", 0);
+    pref.putULong("lastUp", 0);
 
-        String stats = "=== FAZENDA CLIMATE LOGS ===\n\n";
-        stats += "STATISTICS:\n";
-        stats += "CH1 activations: " + String(logger.ch1_activations) + "\n";
-        stats += "CH2 activations: " + String(logger.ch2_activations) + "\n";
-        stats += "CH3 activations: " + String(logger.ch3_activations) + "\n";
-        stats += "CH4 activations: " + String(logger.ch4_activations) + "\n";
-        stats += "Overheat events: " + String(logger.overheat_events) + "\n";
-        stats += "DHT errors: " + String(logger.dht_errors) + "\n";
-        stats += "Coldlock events: " + String(logger.coldlock_events) + "\n\n";
-        stats += "=== LOG ENTRIES ===\n";
-
-        AsyncWebServerResponse *response = request->beginChunkedResponse(
-            "text/plain",
-            [stats](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
-                static File logFile;
-                
-                if (index < stats.length()) {
-                    size_t toCopy = min(maxLen, stats.length() - index);
-                    memcpy(buffer, stats.c_str() + index, toCopy);
-                    return toCopy;
-                }
-                
-                size_t fileIndex = index - stats.length();
-                
-                if (fileIndex == 0) {
-                    logFile = SPIFFS.open("/climate.log", FILE_READ);
-                    if (!logFile) return 0;
-                }
-                
-                if (!logFile || !logFile.available()) {
-                    if (logFile) logFile.close();
-                    return 0;
-                }
-                
-                return logFile.read(buffer, maxLen);
-            }
-        );
-        
-        request->send(response);
-    });
-    
-    server.onNotFound([](AsyncWebServerRequest *request){
-        request->send(404, "text/plain", "Not Found");
-    });
-    
-    server.begin();
-    Serial.println("[WEB] Server started on port 80");
+    Serial.println("\n=== BOOT DIAGNOSTICS RESET ===");
+    Serial.println("All counters cleared!");
+    Serial.println("==============================\n");
 }
 
 void checkPreferences() {
@@ -466,59 +142,49 @@ void checkPreferences() {
 
 // --- BLYNK ---
 BLYNK_CONNECTED() {
-    Blynk.syncVirtual(V5); 
+    Blynk.syncVirtual(V5);
     Blynk.syncVirtual(V6);
-
-    timer.setTimeout(500, []() {
-        Blynk.syncVirtual(V5);
-        Blynk.virtualWrite(V6, climate.set_hum_limit);
-        Blynk.virtualWrite(V13, (int)(climate.tempOffset * 10)); 
-        Blynk.virtualWrite(V0, climate.manualBoost ? 1 : 0);
-        Blynk.virtualWrite(V10, climate.systemOn ? 1 : 0);
-        Blynk.virtualWrite(V4, climate.currentHeatState ? 1 : 0);
-        Blynk.virtualWrite(V11, (climate.dhtRetryCount >= 3) ? 1 : 0);
-        Blynk.virtualWrite(V15, (int)(climate.hysteresis * 10));
-        
-        Serial.println("All Blynk values synced!");
-    });
+    // Відкладаємо push на 500мс — щоб syncVirtual встиг отримати відповідь від сервера
+    blynkSyncPending = true;
+    blynkSyncAt = millis() + 500;
 }
 
-BLYNK_WRITE(V5) { 
+BLYNK_WRITE(V5) {
     float val = param.asFloat();
     Serial.printf(">>> V5 RAW: %.2f\n", val);
     climate.set_temp_day = constrain(val, 10.0, 35.0);
     Serial.printf(">>> set_temp_day: %.2f\n", climate.set_temp_day);
-    prefChanged = true; 
-    lastPrefChangeTime = millis(); 
+    prefChanged = true;
+    lastPrefChangeTime = millis();
 }
 
-BLYNK_WRITE(V6) { 
+BLYNK_WRITE(V6) {
     float val = param.asFloat();
     climate.set_hum_limit = constrain(val, 30.0, 90.0);
-    prefChanged = true; 
-    lastPrefChangeTime = millis(); 
+    prefChanged = true;
+    lastPrefChangeTime = millis();
     Serial.printf("New Hum: %.1f\n", climate.set_hum_limit);
 }
 
 BLYNK_WRITE(V0) {
     bool newBoost = (param.asInt() == 1);
-    
+
     if (newBoost != climate.manualBoost) {
-        Serial.printf("[V0] Boost: %s → %s\n", 
+        Serial.printf("[V0] Boost: %s \xe2\x86\x92 %s\n",
             climate.manualBoost ? "ON" : "OFF", newBoost ? "ON" : "OFF");
     }
-    
+
     if (newBoost && !climate.systemOn) {
-        Serial.println("[V0] Boost ignored — system OFF");
+        Serial.println("[V0] Boost ignored \xe2\x80\x94 system OFF");
         Blynk.virtualWrite(V0, 0);
         return;
     }
-    
+
     climate.manualBoost = newBoost;
-    
+
     if (climate.manualBoost) {
         Serial.println("[V0] Forcing CH4");
-        startFanWithKick(&climate, 4); 
+        startFanWithKick(&climate, 4);
     } else {
         Serial.println("[V0] Boost OFF");
     }
@@ -528,14 +194,14 @@ BLYNK_WRITE(V10) {
     climate.systemOn = (param.asInt() == 1);
     prefChanged = true;
     lastPrefChangeTime = millis();
-    
+
     Serial.printf("[V10] System: %s\n", climate.systemOn ? "ON" : "OFF");
-    
+
     if (!climate.systemOn) {
         Serial.println("[V10] Stopping fan and heater");
         setFanChannel(&climate, 0);
         heatControl(&climate, false);
-        
+
         if (climate.isDay) {
             climate.activeCycle = outNormal;
             climate.autoOffset = 0.0;
@@ -546,14 +212,14 @@ BLYNK_WRITE(V10) {
 }
 
 BLYNK_WRITE(V13) {
-    int val = param.asInt(); 
+    int val = param.asInt();
     climate.tempOffset = constrain(val, -20, 20) / 10.0;
-    
-    prefChanged = true; 
+
+    prefChanged = true;
     lastPrefChangeTime = millis();
-    
-    Serial.printf("V13: %d → Offset: %.1f\n", val, climate.tempOffset);
-    
+
+    Serial.printf("V13: %d \xe2\x86\x92 Offset: %.1f\n", val, climate.tempOffset);
+
     if (Blynk.connected()) {
         Blynk.virtualWrite(V14, climate.tempOffset);
     }
@@ -565,61 +231,16 @@ BLYNK_WRITE(V15) {
     climate.hysteresis = constrain(val, 1, 50) / 10.0;
     prefChanged = true;
     lastPrefChangeTime = millis();
-    
-    Serial.printf("[V15] Hyst: %.2f → %.2f\n", oldHyst, climate.hysteresis);
-}
 
-void sendPeriodicData() {
-    if (Blynk.connected() && !isnan(climate.lastValidT)) {
-        Blynk.virtualWrite(V1, climate.lastValidT); 
-        Blynk.virtualWrite(V2, climate.lastValidH);
-    }
-}
-
-// === СИНХРОНІЗАЦІЯ З BLYNK ===
-void pushChangesToBlynk(ClimateState* state) {
-    static int lastSentFan = -1;
-    static int lastSentHeat = -1;
-    static bool lastSentTooCold = false;
-    static bool lastSentDHTErr = false;
-    static bool lastSentDayStatus = true;
-    
-    if (!Blynk.connected()) return;
-
-    if (state->currentActiveChannel != lastSentFan) {
-        Blynk.virtualWrite(V3, state->currentActiveChannel);
-        lastSentFan = state->currentActiveChannel;
-    }
-    
-    if (state->currentHeatState != (lastSentHeat == 1)) {
-        Blynk.virtualWrite(V4, state->currentHeatState ? 1 : 0);
-        lastSentHeat = state->currentHeatState ? 1 : 0;
-    }
-
-    if (state->isDay != lastSentDayStatus) {
-        Blynk.virtualWrite(V7, state->isDay ? 1 : 0);
-        Blynk.virtualWrite(V8, state->isDay ? 0 : 1);
-        lastSentDayStatus = state->isDay;
-    }
-
-    if (state->tooColdLock != lastSentTooCold) {
-        Blynk.virtualWrite(V9, state->tooColdLock ? 1 : 0);
-        lastSentTooCold = state->tooColdLock;
-    }
-    
-    bool dhtErr = (state->dhtRetryCount >= 1);
-    if (dhtErr != lastSentDHTErr) {
-        Blynk.virtualWrite(V11, dhtErr ? 1 : 0);
-        lastSentDHTErr = dhtErr;
-    }
+    Serial.printf("[V15] Hyst: %.2f \xe2\x86\x92 %.2f\n", oldHyst, climate.hysteresis);
 }
 
 void setup() {
     Serial.begin(115200);
-    
-    tft.initR(INITR_BLACKTAB); 
+
+    tft.initR(INITR_BLACKTAB);
     tft.setRotation(1);
-    drawStaticUI(); 
+    drawStaticUI();
 
     pinMode(RELAY_CH1_PIN, OUTPUT);  digitalWrite(RELAY_CH1_PIN, HIGH);
     pinMode(RELAY_CH2_PIN, OUTPUT);  digitalWrite(RELAY_CH2_PIN, HIGH);
@@ -634,7 +255,7 @@ void setup() {
     float initialH = dht.readHumidity();
 
     if (!isnan(initialT) && !isnan(initialH)) {
-        Serial.printf("[BOOT] Initial: T=%.1f°C H=%.1f%%\n", initialT, initialH);
+        Serial.printf("[BOOT] Initial: T=%.1f\xc2\xb0\x43 H=%.1f%%\n", initialT, initialH);
         updateDisplayNew(initialT, initialH, 0, true, false, false, outNormal, true, false);
     } else {
         Serial.println("[BOOT] DHT not ready - showing ERR");
@@ -662,7 +283,7 @@ void setup() {
     climate.tempOffset = constrain(pref.getFloat("offset", 0.0), -2.0, 2.0);
     climate.hysteresis = constrain(pref.getFloat("hyst", 0.1), 0.1, 4.0);
     climate.systemOn = pref.getBool("sysOn", true);
-    
+
     climate.lastValidT = initialT;
     climate.lastValidH = initialH;
 
@@ -679,9 +300,9 @@ void setup() {
     Serial.println("\n========== BOOT DIAGNOSTICS ==========");
     Serial.printf("Boot count: %u\n", bootCount);
     Serial.printf("Previous uptime: %lu seconds\n", lastUptime / 1000);
-    Serial.printf("Last temperature: %.1f°C\n", lastTemp);
+    Serial.printf("Last temperature: %.1f\xc2\xb0\x43\n", lastTemp);
     Serial.printf("Last fan channel: %d\n", lastChannel);
-    Serial.printf("Last offset: %.1f°C\n", lastOffset);
+    Serial.printf("Last offset: %.1f\xc2\xb0\x43\n", lastOffset);
     Serial.printf("Last DHT errors: %u\n", lastErrors);
     Serial.println("======================================\n");
 
@@ -692,8 +313,8 @@ void setup() {
     if (bootCount > 1 && lastUptime < 60000) {
         Serial.println("WARNING: Last session was very short (<60 sec)!");
     }
- 
-    WiFi.mode(WIFI_STA); 
+
+    WiFi.mode(WIFI_STA);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
     unsigned long wifiStart = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 10000) {
@@ -703,9 +324,9 @@ void setup() {
 
     if (WiFi.status() == WL_CONNECTED) {
         Serial.println("WiFi OK: " + WiFi.localIP().toString());
-        
+
         initTime();
-        
+
         if (!timeInitialized) {
             Serial.println("[NTP] First attempt failed, retrying...");
             delay(3000);
@@ -715,8 +336,8 @@ void setup() {
         Serial.println("WiFi failed, will retry in loop");
     }
 
-    esp_task_wdt_init(15, true); 
-    esp_task_wdt_add(NULL); 
+    esp_task_wdt_init(15, true);
+    esp_task_wdt_add(NULL);
 
     Blynk.config(BLYNK_AUTH_TOKEN, "blynk.cloud", 80);
     Blynk.connect(5000);
@@ -724,15 +345,15 @@ void setup() {
     Serial.println(Blynk.connected() ? "Blynk OK" : "Blynk FAILED");
 
     timer.setInterval(60000L, sendPeriodicData);
-    timer.setInterval(30000L, checkBlynkStatus); 
+    timer.setInterval(30000L, checkBlynkStatus);
 
-    lastReadTime = millis() - CLIMATE_CHECK_INTERVAL; 
+    lastReadTime = millis() - CLIMATE_CHECK_INTERVAL;
 
     Serial.println("System initialized. Logic will start in loop().");
 
     Serial.println("\n========== AUTO CYCLE INFO ==========");
-    Serial.printf("Initial cycle: %s (offset: %.1f)\n", 
-        climate.activeCycle == outCold ? "outCold" : 
+    Serial.printf("Initial cycle: %s (offset: %.1f)\n",
+        climate.activeCycle == outCold ? "outCold" :
         climate.activeCycle == outNormal ? "outNormal" : "outHot",
         climate.autoOffset);
     Serial.println("Auto cycles work ONLY during DAY mode");
@@ -740,7 +361,7 @@ void setup() {
 
     setupWebServer();
 
-    
+
     // === ВИВЕСТИ ЛОГ У SERIAL ===
     if (logger.storageAvailable) {
         delay(1000);
@@ -755,7 +376,7 @@ void setup() {
         } else {
             Serial.println("[ERROR] Could not open /climate.log");
         }
-    } 
+    }
 }
 
 void loop() {
@@ -785,21 +406,21 @@ void loop() {
     static AutoCycle lastShownCycle = outNormal;
     static bool lastShownSystemOn = true;
 
-    bool tChanged = (isnan(climate.lastValidT) != isnan(lastShownT)) || 
+    bool tChanged = (isnan(climate.lastValidT) != isnan(lastShownT)) ||
                     (!isnan(climate.lastValidT) && fabsf(climate.lastValidT - lastShownT) > 0.05);
-    bool hChanged = (isnan(climate.lastValidH) != isnan(lastShownH)) || 
+    bool hChanged = (isnan(climate.lastValidH) != isnan(lastShownH)) ||
                     (!isnan(climate.lastValidH) && fabsf(climate.lastValidH - lastShownH) > 0.5);
 
-    if (climate.currentActiveChannel != lastShownFan || 
+    if (climate.currentActiveChannel != lastShownFan ||
         climate.currentHeatState != lastShownHeat ||
         tChanged || hChanged ||
         climate.isDay != lastShownDay ||
         climate.activeCycle != lastShownCycle ||
         climate.systemOn != lastShownSystemOn) {
-        
-        updateDisplayNew(climate.lastValidT, climate.lastValidH, 
-                        climate.currentActiveChannel, climate.isDay, 
-                        climate.currentHeatState, climate.tooColdLock, 
+
+        updateDisplayNew(climate.lastValidT, climate.lastValidH,
+                        climate.currentActiveChannel, climate.isDay,
+                        climate.currentHeatState, climate.tooColdLock,
                         climate.activeCycle, climate.systemOn,
                         Blynk.connected());
 
@@ -817,10 +438,24 @@ void loop() {
     timer.run();
     checkPreferences();
 
+    // === BLYNK SYNC (відкладений після реконнекту) ===
+    if (blynkSyncPending && millis() >= blynkSyncAt && Blynk.connected()) {
+        blynkSyncPending = false;
+        Blynk.syncVirtual(V5);
+        Blynk.virtualWrite(V6, climate.set_hum_limit);
+        Blynk.virtualWrite(V13, (int)(climate.tempOffset * 10));
+        Blynk.virtualWrite(V0, climate.manualBoost ? 1 : 0);
+        Blynk.virtualWrite(V10, climate.systemOn ? 1 : 0);
+        Blynk.virtualWrite(V4, climate.currentHeatState ? 1 : 0);
+        Blynk.virtualWrite(V11, (climate.dhtRetryCount >= 3) ? 1 : 0);
+        Blynk.virtualWrite(V15, (int)(climate.hysteresis * 10));
+        Serial.println("All Blynk values synced!");
+    }
+
     // === NTP RETRY ===
     static unsigned long lastNtpRetry = 0;
 
-    if (!timeInitialized && WiFi.status() == WL_CONNECTED && 
+    if (!timeInitialized && WiFi.status() == WL_CONNECTED &&
         millis() - lastNtpRetry > 60000) {
         Serial.println("[NTP] Retrying time sync...");
         esp_task_wdt_reset();
@@ -840,22 +475,22 @@ void loop() {
     }
 
     // 4. Kickstart
-    if (climate.kickstartActive && 
-        (millis() - climate.kickstartTime >= 5000)) { 
+    if (climate.kickstartActive &&
+        (millis() - climate.kickstartTime >= 5000)) {
         climate.kickstartActive = false;
-        
+
         if (climate.targetChannelAfterKick != climate.currentActiveChannel) {
             setFanChannel(&climate, climate.targetChannelAfterKick);
-            Serial.printf("Kickstart finished. Target: %d\n", 
+            Serial.printf("Kickstart finished. Target: %d\n",
                 climate.targetChannelAfterKick);
         }
     }
-    
+
     // 5. Клімат-контроль
     if (millis() - lastReadTime >= CLIMATE_CHECK_INTERVAL) {
         lastReadTime = millis();
         runClimateControl(&climate);
-        pushChangesToBlynk(&climate);
+        pushChangesToBlynk();
     }
 
     // === ОЧИСТИТИ ЛОГИ (Serial 'C') ===
@@ -863,16 +498,16 @@ void loop() {
         char cmd = Serial.read();
         if (cmd == 'C' || cmd == 'c') {
             Serial.println("\n[MANUAL] Clearing logs...");
-            
+
             SPIFFS.remove("/climate.log");
-            
+
             File file = SPIFFS.open("/climate.log", FILE_WRITE);
             if (file) {
                 file.println("=== FAZENDA CLIMATE LOG ===");
                 file.println("Timestamp,Temp,Hum,Fan,Heat,Mode,Event");
                 file.close();
             }
-            
+
             logger.ch1_activations = 0;
             logger.ch2_activations = 0;
             logger.ch3_activations = 0;
@@ -880,7 +515,7 @@ void loop() {
             logger.overheat_events = 0;
             logger.dht_errors = 0;
             logger.coldlock_events = 0;
-            
+
             logEvent("SYSTEM", "Logs cleared manually");
             Serial.println("[MANUAL] Done!\n");
         }
