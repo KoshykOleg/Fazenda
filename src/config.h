@@ -2,6 +2,10 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+// === ВОЛОГІСТЬ НІЧ ===
+#define HUM_OFFSET_LOW  10.0   // CH1: set_hum - 10%
+#define HUM_OFFSET_HIGH  5.0   // CH2/CH3: set_hum + 5%
+
 // === ПІНИ РЕЛЕ ===
 #define RELAY_CH1_PIN  14
 #define RELAY_CH2_PIN  27
@@ -22,10 +26,15 @@
 #define TFT_SCLK 22
 
 // === АВТОМАТИЧНІ ЦИКЛИ ===
-enum AutoCycle { 
+enum AutoCycle {
     outCold,
     outNormal,
     outHot
+};
+
+enum HumCycle {
+    humLow,
+    humHigh
 };
 
 // === КОЛЬОРИ ДИСПЛЕЯ ===
@@ -37,9 +46,14 @@ enum AutoCycle {
 #define C_GRAY      0x2104
 #define C_DARK_GRAY 0x3186
 
+// Денні стрілки (залишаємо)
 #define ARROW_COLD   0x001F
 #define ARROW_NORMAL 0x07E0
 #define ARROW_HOT    0xF800
+
+// Нічні стрілки вологості
+#define ARROW_HUM_LOW  0x07E0   // Зелений
+#define ARROW_HUM_HIGH 0xF800   // Червоний
 
 // === ПОЗИЦІЇ ЕЛЕМЕНТІВ НА ДИСПЛЕЇ ===
 #define CHANNELS_BASE_Y  100

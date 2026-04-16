@@ -134,6 +134,7 @@ void checkPreferences() {
         pref.putFloat("hum", climate.set_hum_limit);
         pref.putFloat("offset", climate.tempOffset);
         pref.putFloat("hyst", climate.hysteresis);
+        pref.putFloat("humHys", climate.humHys);
         pref.putBool("sysOn", climate.systemOn);
         prefChanged = false;
         Serial.println("Settings saved to Flash!");
@@ -144,7 +145,7 @@ void checkPreferences() {
 BLYNK_CONNECTED() {
     Blynk.syncVirtual(V5);
     Blynk.syncVirtual(V6);
-    // Відкладаємо push на 500мс — щоб syncVirtual встиг отримати відповідь від сервера
+    Blynk.syncVirtual(V12);
     blynkSyncPending = true;
     blynkSyncAt = millis() + 500;
 }
@@ -160,10 +161,17 @@ BLYNK_WRITE(V5) {
 
 BLYNK_WRITE(V6) {
     float val = param.asFloat();
+    float oldLimit = climate.set_hum_limit;
     climate.set_hum_limit = constrain(val, 30.0, 90.0);
     prefChanged = true;
     lastPrefChangeTime = millis();
-    Serial.printf("New Hum: %.1f\n", climate.set_hum_limit);
+    
+    Serial.printf("New Hum: %.1f → %.1f\n", oldLimit, climate.set_hum_limit);
+    
+    if (!climate.isDay && !isnan(climate.lastValidT) && !isnan(climate.lastValidH)) {
+        Serial.println("[V6] Re-running night logic with new hum limit");
+        runClimateControl(&climate);
+    }
 }
 
 BLYNK_WRITE(V0) {
@@ -211,6 +219,16 @@ BLYNK_WRITE(V10) {
     }
 }
 
+BLYNK_WRITE(V12) {
+    int val = param.asInt();
+    float oldHumHys = climate.humHys;
+    climate.humHys = constrain(val, 1, 10);  // 1-10%
+    prefChanged = true;
+    lastPrefChangeTime = millis();
+
+    Serial.printf("[V12] humHys: %.0f%% → %.0f%%\n", oldHumHys, climate.humHys);
+}
+
 BLYNK_WRITE(V13) {
     int val = param.asInt();
     climate.tempOffset = constrain(val, -20, 20) / 10.0;
@@ -256,7 +274,9 @@ void setup() {
 
     if (!isnan(initialT) && !isnan(initialH)) {
         Serial.printf("[BOOT] Initial: T=%.1f\xc2\xb0\x43 H=%.1f%%\n", initialT, initialH);
-        updateDisplayNew(initialT, initialH, 0, true, false, false, outNormal, true, false);
+        updateDisplayNew(initialT, initialH, 0, true, false, false, 
+                        outNormal, humLow,
+                        true, false);
     } else {
         Serial.println("[BOOT] DHT not ready - showing ERR");
     }
@@ -282,6 +302,7 @@ void setup() {
     climate.set_hum_limit = constrain(pref.getFloat("hum", 50.0), 30.0, 90.0);
     climate.tempOffset = constrain(pref.getFloat("offset", 0.0), -2.0, 2.0);
     climate.hysteresis = constrain(pref.getFloat("hyst", 0.1), 0.1, 4.0);
+    climate.humHys = constrain(pref.getFloat("humHys", 5.0), 1.0, 10.0);
     climate.systemOn = pref.getBool("sysOn", true);
 
     climate.lastValidT = initialT;
@@ -404,6 +425,7 @@ void loop() {
     static float lastShownH = -999.0;
     static bool lastShownDay = !climate.isDay;
     static AutoCycle lastShownCycle = outNormal;
+    static HumCycle lastShownHumCycle = humLow;
     static bool lastShownSystemOn = true;
 
     bool tChanged = (isnan(climate.lastValidT) != isnan(lastShownT)) ||
@@ -416,13 +438,16 @@ void loop() {
         tChanged || hChanged ||
         climate.isDay != lastShownDay ||
         climate.activeCycle != lastShownCycle ||
+        climate.humCycle != lastShownHumCycle ||
         climate.systemOn != lastShownSystemOn) {
 
-        updateDisplayNew(climate.lastValidT, climate.lastValidH,
-                        climate.currentActiveChannel, climate.isDay,
-                        climate.currentHeatState, climate.tooColdLock,
-                        climate.activeCycle, climate.systemOn,
-                        Blynk.connected());
+        // ОНОВЛЕНИЙ ВИКЛИК
+updateDisplayNew(climate.lastValidT, climate.lastValidH,
+                climate.currentActiveChannel, climate.isDay,
+                climate.currentHeatState, climate.tooColdLock,
+                climate.activeCycle, climate.humCycle,
+                climate.systemOn,
+                Blynk.connected());
 
         lastShownFan = climate.currentActiveChannel;
         lastShownHeat = climate.currentHeatState;
@@ -430,6 +455,7 @@ void loop() {
         lastShownH = climate.lastValidH;
         lastShownDay = climate.isDay;
         lastShownCycle = climate.activeCycle;
+        lastShownHumCycle = climate.humCycle;
         lastShownSystemOn = climate.systemOn;
     }
 
@@ -441,13 +467,14 @@ void loop() {
     // === BLYNK SYNC (відкладений після реконнекту) ===
     if (blynkSyncPending && millis() >= blynkSyncAt && Blynk.connected()) {
         blynkSyncPending = false;
+        Blynk.virtualWrite(V0, climate.manualBoost ? 1 : 0);
+        Blynk.virtualWrite(V4, climate.currentHeatState ? 1 : 0);
         Blynk.syncVirtual(V5);
         Blynk.virtualWrite(V6, climate.set_hum_limit);
-        Blynk.virtualWrite(V13, (int)(climate.tempOffset * 10));
-        Blynk.virtualWrite(V0, climate.manualBoost ? 1 : 0);
         Blynk.virtualWrite(V10, climate.systemOn ? 1 : 0);
-        Blynk.virtualWrite(V4, climate.currentHeatState ? 1 : 0);
         Blynk.virtualWrite(V11, (climate.dhtRetryCount >= 3) ? 1 : 0);
+        Blynk.virtualWrite(V12, (int)climate.humHys);
+        Blynk.virtualWrite(V13, (int)(climate.tempOffset * 10));
         Blynk.virtualWrite(V15, (int)(climate.hysteresis * 10));
         Serial.println("All Blynk values synced!");
     }

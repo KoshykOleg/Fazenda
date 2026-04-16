@@ -7,6 +7,7 @@
 
 // === СТРУКТУРА СТАНУ КЛІМАТ-СИСТЕМИ ===
 struct ClimateState {
+    bool nightHumCtrlActive = false;
     // Налаштування (з Preferences)
     float set_temp_day = 25.0;
     float set_hum_limit = 50.0;
@@ -23,10 +24,17 @@ struct ClimateState {
     bool currentHeatState = false;
     bool tooColdLock = false;
     
-    // Автоматичні цикли
+    // Автоматичні цикли (ДЕНЬ)
     AutoCycle activeCycle = outNormal;
     float autoOffset = 0.0;
     unsigned long lastCycleChangeTime = 0;
+    
+    // НІЧНА ЛОГІКА
+    HumCycle humCycle = humLow;        // Цикл вологості
+    float humHys = 5.0;                 // Гістерезис вологості (%)
+    float lastNightT = NAN;             // Попереднє T для порівняння
+    unsigned long lastNightCheck = 0;   // Таймер перевірки температури
+    bool coldLockMode = false;          // Режим захисту від холоду
     
     // Kickstart
     bool kickstartActive = false;
@@ -55,9 +63,15 @@ void setFanChannel(ClimateState* state, int channel);
 void startFanWithKick(ClimateState* state, int targetChannel);
 void heatControl(ClimateState* state, bool state_heat);
 
-// === АВТОМАТИЧНІ ЦИКЛИ ===
+// === АВТОМАТИЧНІ ЦИКЛИ (ДЕНЬ) ===
 void selectCycleOnBoot(ClimateState* state, float t);
 void checkCycleTransition(ClimateState* state, int newChannel);
+
+// НІЧНА ЛОГІКА
+void runNightTempAdaptation(ClimateState* state, float t);  // Температурна адаптація
+void runNightHumidityControl(ClimateState* state, float t, float h);  // Вологісний контроль
+void checkColdLockMode(ClimateState* state, float t);  // Перевірка coldLock
+void checkHumCycleTransition(ClimateState* state, int newChannel);
 
 // === ГОЛОВНА ЛОГІКА ===
 void runClimateControl(ClimateState* state);
