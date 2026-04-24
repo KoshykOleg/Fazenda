@@ -15,7 +15,7 @@ bool timeInitialized = false;
 // === NTP КОНФІГУРАЦІЯ ===
 const char* ntpServer = "pool.ntp.org";
 extern const long gmtOffset_sec = 2 * 3600;
-extern const int daylightOffset_sec = 0;
+extern const int daylightOffset_sec = 0; 
 
 // === TIMESTAMP (char buffer замість String) ===
 void getTimestamp(char* buffer, size_t bufSize) {

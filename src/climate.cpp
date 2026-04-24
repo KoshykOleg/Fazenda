@@ -435,6 +435,7 @@ void runClimateControl(ClimateState* state) {
 
         state->lastValidT = NAN;
         state->lastValidH = NAN;
+        state->lastNightT = NAN;
         
         // ОНОВЛЕНИЙ ВИКЛИК
         updateDisplayNew(NAN, NAN, state->currentActiveChannel, state->isDay, 

@@ -48,24 +48,20 @@ ClimateState climate;
 unsigned long lastReadTime = 0;
 bool prefChanged = false;
 unsigned long lastPrefChangeTime = 0;
-bool blynkSyncPending = false;
-unsigned long blynkSyncAt = 0;
 
 // === BLYNK МЕРЕЖЕВІ ФУНКЦІЇ ===
 void checkBlynkStatus() {
     if (WiFi.status() == WL_CONNECTED) {
         if (!Blynk.connected()) {
-            esp_task_wdt_reset();
-            Blynk.connect(3000);
-            esp_task_wdt_reset();
+            Serial.println("[Blynk] Disconnected, reconnecting...");
+            Blynk.connect(0);
         }
     } else {
         static unsigned long lastWiFiRetry = 0;
         if (millis() - lastWiFiRetry > 30000) {
-            esp_task_wdt_reset();
-            WiFi.begin(WIFI_SSID, WIFI_PASS);
+            WiFi.reconnect();
             lastWiFiRetry = millis();
-            Serial.println("WiFi lost. Retrying...");
+            Serial.println("[WiFi] Lost. Retrying...");
         }
     }
 }
@@ -143,11 +139,18 @@ void checkPreferences() {
 
 // --- BLYNK ---
 BLYNK_CONNECTED() {
-    Blynk.syncVirtual(V5);
-    Blynk.syncVirtual(V6);
-    Blynk.syncVirtual(V12);
-    blynkSyncPending = true;
-    blynkSyncAt = millis() + 500;
+    timer.setTimeout(1000, []() {
+        Blynk.syncVirtual(V5);
+        Blynk.virtualWrite(V6,  climate.set_hum_limit);
+        Blynk.virtualWrite(V0,  climate.manualBoost ? 1 : 0);
+        Blynk.virtualWrite(V4,  climate.currentHeatState ? 1 : 0);
+        Blynk.virtualWrite(V10, climate.systemOn ? 1 : 0);
+        Blynk.virtualWrite(V11, (climate.dhtRetryCount >= 3) ? 1 : 0);
+        Blynk.virtualWrite(V12, (int)climate.humHys);
+        Blynk.virtualWrite(V13, (int)(climate.tempOffset * 10));
+        Blynk.virtualWrite(V15, (int)(climate.hysteresis * 10));
+        Serial.println("All Blynk values synced!");
+    });
 }
 
 BLYNK_WRITE(V5) {
@@ -168,9 +171,9 @@ BLYNK_WRITE(V6) {
     
     Serial.printf("New Hum: %.1f → %.1f\n", oldLimit, climate.set_hum_limit);
     
-    if (!climate.isDay && !isnan(climate.lastValidT) && !isnan(climate.lastValidH)) {
-        Serial.println("[V6] Re-running night logic with new hum limit");
-        runClimateControl(&climate);
+    if (!climate.isDay) {
+        lastReadTime = 0;
+        Serial.println("[V6] Night hum limit updated, climate will re-run immediately");
     }
 }
 
@@ -222,7 +225,7 @@ BLYNK_WRITE(V10) {
 BLYNK_WRITE(V12) {
     int val = param.asInt();
     float oldHumHys = climate.humHys;
-    climate.humHys = constrain(val, 1, 10);  // 1-10%
+    climate.humHys = constrain(val, 1, 10);
     prefChanged = true;
     lastPrefChangeTime = millis();
 
@@ -272,13 +275,11 @@ void setup() {
     float initialT = dht.readTemperature();
     float initialH = dht.readHumidity();
 
-    if (!isnan(initialT) && !isnan(initialH)) {
-        Serial.printf("[BOOT] Initial: T=%.1f\xc2\xb0\x43 H=%.1f%%\n", initialT, initialH);
-        updateDisplayNew(initialT, initialH, 0, true, false, false, 
-                        outNormal, humLow,
-                        true, false);
-    } else {
-        Serial.println("[BOOT] DHT not ready - showing ERR");
+    if (isnan(initialT) || isnan(initialH)) {
+        Serial.println("[BOOT] DHT first read failed, retrying...");
+        delay(2500);
+        initialT = dht.readTemperature();
+        initialH = dht.readHumidity();
     }
 
     pref.begin("fazenda", false);
@@ -382,20 +383,12 @@ void setup() {
 
     setupWebServer();
 
-
-    // === ВИВЕСТИ ЛОГ У SERIAL ===
+    // === ІНФО ПРО ЛОГ ===
     if (logger.storageAvailable) {
-        delay(1000);
         File file = SPIFFS.open("/climate.log", FILE_READ);
         if (file) {
-            Serial.println("\n========== CLIMATE LOG CONTENT ==========");
-            while (file.available()) {
-                Serial.write(file.read());
-            }
+            Serial.printf("[SPIFFS] Log file: %u bytes (view via /logs web endpoint)\n", file.size());
             file.close();
-            Serial.println("==========================================\n");
-        } else {
-            Serial.println("[ERROR] Could not open /climate.log");
         }
     }
 }
@@ -405,7 +398,7 @@ void loop() {
 
     // === ДІАГНОСТИКА (кожні 30 сек) ===
     static unsigned long lastBootDiagUpdate = 0;
-    if (millis() - lastBootDiagUpdate > 30000) {
+    if (millis() - lastBootDiagUpdate > 300000) {
         pref.putULong("lastUp", millis());
         pref.putFloat("lastT", climate.lastValidT);
         pref.putInt("lastCh", climate.currentActiveChannel);
@@ -460,24 +453,9 @@ updateDisplayNew(climate.lastValidT, climate.lastValidH,
     }
 
     // 3. Мережа
-    if (Blynk.connected()) Blynk.run();
+    Blynk.run();
     timer.run();
     checkPreferences();
-
-    // === BLYNK SYNC (відкладений після реконнекту) ===
-    if (blynkSyncPending && millis() >= blynkSyncAt && Blynk.connected()) {
-        blynkSyncPending = false;
-        Blynk.virtualWrite(V0, climate.manualBoost ? 1 : 0);
-        Blynk.virtualWrite(V4, climate.currentHeatState ? 1 : 0);
-        Blynk.syncVirtual(V5);
-        Blynk.virtualWrite(V6, climate.set_hum_limit);
-        Blynk.virtualWrite(V10, climate.systemOn ? 1 : 0);
-        Blynk.virtualWrite(V11, (climate.dhtRetryCount >= 3) ? 1 : 0);
-        Blynk.virtualWrite(V12, (int)climate.humHys);
-        Blynk.virtualWrite(V13, (int)(climate.tempOffset * 10));
-        Blynk.virtualWrite(V15, (int)(climate.hysteresis * 10));
-        Serial.println("All Blynk values synced!");
-    }
 
     // === NTP RETRY ===
     static unsigned long lastNtpRetry = 0;
