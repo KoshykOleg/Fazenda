@@ -219,7 +219,7 @@ void checkCycleTransition(ClimateState* state, int newChannel) {
 }
 
 // НІЧНА ЛОГІКА
-// === ПЕРЕВІРКА COLDLOCK РЕЖИМУ ===
+// === ПЕРЕВІРКА COLDLOCK РЕЖИМУ
 void checkColdLockMode(ClimateState* state, float t) {
     if (!state->coldLockMode && t < (COLDLOCK_TEMP_LOW - state->hysteresis)) {
         state->coldLockMode = true;
