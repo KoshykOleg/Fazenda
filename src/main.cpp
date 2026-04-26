@@ -410,6 +410,8 @@ void loop() {
     // 1. ПРІОРИТЕТ: Реле + Анімація
     handleRelayQueue(&climate);
     processChannelAnimation();
+    
+    climate.lastBlynkState = Blynk.connected();
 
     // 2. Оновлення дисплея
     static int lastShownFan = -1;
@@ -450,6 +452,17 @@ updateDisplayNew(climate.lastValidT, climate.lastValidH,
         lastShownCycle = climate.activeCycle;
         lastShownHumCycle = climate.humCycle;
         lastShownSystemOn = climate.systemOn;
+    }
+
+    // Periodic screen recovery (захист від SPI corruption)
+    static unsigned long lastFullRedraw = 0;
+    if (millis() - lastFullRedraw > 1800000UL) {
+        drawStaticUI();
+        lastShownFan = -99;
+        lastShownT = -999.0;
+        lastShownH = -999.0;
+        lastShownDay = !climate.isDay;
+        lastFullRedraw = millis();
     }
 
     // 3. Мережа

@@ -42,10 +42,7 @@ void climateInit(ClimateState* state) {
     //  НІЧНА ЛОГІКА
     state->humCycle = humLow;
     state->humHys = 5.0;
-    state->lastNightT = NAN;
-    state->lastNightCheck = 0;
     state->coldLockMode = false;
-    state->nightHumCtrlActive = false;
     
     // Kickstart
     state->kickstartActive = false;
@@ -169,14 +166,14 @@ void selectCycleOnBoot(ClimateState* state, float t) {
 // === ПЕРЕМИКАННЯ ЦИКЛІВ ===
 void checkCycleTransition(ClimateState* state, int newChannel) {
     if (!state->isDay) return;
-    if (newChannel == 0) return;
-    
-    unsigned long now = millis();
-    if (state->lastCycleChangeTime > 0 && 
-        now - state->lastCycleChangeTime < CYCLE_CHANGE_DELAY) {
+    if (newChannel == 0) {
+        DBG("[CYCLE] Fan OFF — cycle stays: %s\n",
+            state->activeCycle == outCold ? "outCold" :
+            state->activeCycle == outNormal ? "outNormal" : "outHot");
         return;
     }
-    
+
+    unsigned long now = millis();    
     AutoCycle oldCycle = state->activeCycle;
 
     if (state->activeCycle == outNormal) {
@@ -229,16 +226,9 @@ void checkColdLockMode(ClimateState* state, float t) {
         state->tooColdLock = true;  
         logger.coldlock_events++;
         logEvent("COLDLOCK", "Activated");
+        DBG("[COLDLOCK] Activated at T=%.1f°C → Fan OFF\n", t);
         
-        DBG("[COLDLOCK] Activated at T=%.1f°C\n", t);
-        
-        if (state->currentActiveChannel == 0) {
-            DBG_PRINTLN("[COLDLOCK] OFF → Kick → CH1");
-            startFanWithKick(state, 1);
-        } else if (state->currentActiveChannel != 1) {
-            DBG("[COLDLOCK] CH%d → CH1\n", state->currentActiveChannel);
-            setFanChannel(state, 1);
-        }
+        setFanChannel(state, 0);
     }
     
     else if (state->coldLockMode && t >= COLDLOCK_EXIT_TEMP) {
@@ -247,78 +237,7 @@ void checkColdLockMode(ClimateState* state, float t) {
         logEvent("COLDLOCK", "Deactivated");
         
         DBG("[COLDLOCK] Deactivated at T=%.1f°C → Night humidity logic\n", t);
-        
-        
-        state->lastNightT = NAN;
     }
-}
-
-// === ТЕМПЕРАТУРНА АДАПТАЦІЯ ВНОЧІ ===
-void runNightTempAdaptation(ClimateState* state, float t) {
-    unsigned long now = millis();
-    
-    if (isnan(state->lastNightT)) {
-        state->lastNightT = t;
-        state->lastNightCheck = now;
-        DBG("[NIGHT_TEMP] Init: T=%.1f°C, CH%d\n", t, state->currentActiveChannel);
-        return;
-    }
-    
-    if (now - state->lastNightCheck < NIGHT_TEMP_CHECK_INTERVAL) {
-        return;
-    }
-
-    float tempDelta = t - state->lastNightT;
-    
-    DBG("[NIGHT_TEMP] T:%.1f°C (was %.1f°C), delta: %+.1f°C, CH:%d\n",
-        t, state->lastNightT, tempDelta, state->currentActiveChannel);
-    
-    int nextChannel = state->currentActiveChannel;
-    
-    if (tempDelta < 0) {
-        DBG("[NIGHT_TEMP] T↓ → Keep CH%d\n", nextChannel);
-    }
-    else {
-        if (state->currentActiveChannel == 1) {
-            nextChannel = 2;
-            DBG("[NIGHT_TEMP] T↑ → CH1→CH2\n");
-        }
-        else if (state->currentActiveChannel == 2) {
-            nextChannel = 3;
-            DBG("[NIGHT_TEMP] T↑ → CH2→CH3\n");
-        }
-        else if (state->currentActiveChannel == 3) {
-            nextChannel = 3;
-            DBG("[NIGHT_TEMP] T↑ → Stay at CH3 (max)\n");
-        }
-        else if (state->currentActiveChannel == 0) {
-            nextChannel = 1;
-            DBG("[NIGHT_TEMP] OFF → CH1\n");
-        }
-        else {
-            nextChannel = 3;
-            DBG("[NIGHT_TEMP] CH%d → CH3\n", state->currentActiveChannel);
-        }
-    }
-
-    if (nextChannel != state->currentActiveChannel) {
-        if (state->currentActiveChannel == 0) {
-            startFanWithKick(state, nextChannel);
-        } else {
-            setFanChannel(state, nextChannel);
-        }
-        
-        if (logger.storageAvailable) {
-            char details[80];
-            snprintf(details, sizeof(details), 
-                "TempAdapt: %.1f→%.1f°C, CH%d→CH%d",
-                state->lastNightT, t, state->currentActiveChannel, nextChannel);
-            logEvent("NIGHT_TEMP_ADAPT", details);
-        }
-    }
-    
-    state->lastNightT = t;
-    state->lastNightCheck = now;
 }
 
 // === ВОЛОГІСНИЙ КОНТРОЛЬ ВНОЧІ ===
@@ -435,13 +354,12 @@ void runClimateControl(ClimateState* state) {
 
         state->lastValidT = NAN;
         state->lastValidH = NAN;
-        state->lastNightT = NAN;
         
         // ОНОВЛЕНИЙ ВИКЛИК
         updateDisplayNew(NAN, NAN, state->currentActiveChannel, state->isDay, 
                         state->currentHeatState, state->tooColdLock, 
                         state->activeCycle, state->humCycle,
-                        state->systemOn, false);
+                        state->systemOn, state->lastBlynkState);
         
         if (state->systemOn) {
             if (state->currentActiveChannel == 0) {
@@ -495,11 +413,8 @@ void runClimateControl(ClimateState* state) {
                 setFanChannel(state, 1);
             }
             
-            state->lastNightT = NAN;
-            state->lastNightCheck = 0;
             state->coldLockMode = false;
             state->humCycle = humLow;
-            state->nightHumCtrlActive = false;
             
             logEvent("MODE_CHANGE", "DAY→NIGHT, CH1 start");
         }
@@ -589,49 +504,19 @@ void runClimateControl(ClimateState* state) {
             else nextFanChannel = 4;
         }
     }
-else {
-    // === НІЧНА ЛОГІКА ===
-    checkColdLockMode(state, t);
-    
-    if (state->coldLockMode) {
-
-        nextFanChannel = state->currentActiveChannel;
-        DBG("[NIGHT] ColdLock: T=%.1f°C, CH=%d, Heat=ON\n", t, nextFanChannel);
-    }
-    else if (state->nightHumCtrlActive) {
-        runNightHumidityControl(state, t, h);
-        nextFanChannel = state->currentActiveChannel;
-    }
     else {
-        float nightTargetT = state->set_temp_day - NIGHT_TEMP_OFFSET;
-        float upperLimit = nightTargetT + 0.2;
-        if (t > upperLimit) {
-            DBG("[NIGHT_ADAPT] T=%.1f°C > %.1f°C (target=%.1f°C) → Cooling phase\n", 
-                t, upperLimit, nightTargetT);
-            
-            runNightTempAdaptation(state, t);
-            nextFanChannel = state->currentActiveChannel;
-        }
-        else {
-            state->nightHumCtrlActive = true;
-            
-            DBG("[NIGHT_SWITCH] T=%.1f°C <= %.1f°C → HUM_CTRL active (permanent until sunrise)\n", 
-                t, upperLimit);
-            DBG("[NIGHT_SWITCH] Target reached: %.1f°C, switching from TEMP_ADAPT to HUM_CTRL\n", 
-                nightTargetT);
-            
-            runNightHumidityControl(state, t, h);
-            nextFanChannel = state->currentActiveChannel;
-            
-            if (logger.storageAvailable) {
-                char details[80];
-                snprintf(details, sizeof(details), 
-                    "TEMP_ADAPT→HUM_CTRL, T=%.1f°C, target=%.1f°C", t, nightTargetT);
-                logEvent("NIGHT_MODE_SWITCH", details);
+    // === НІЧНА ЛОГІКА ===
+        checkColdLockMode(state, t);
+        
+        if (state->coldLockMode) {
+            nextFanChannel = 0;
+            DBG("[NIGHT] ColdLock: T=%.1f°C, CH=%d, Heat=ON\n", t, nextFanChannel);
+            }
+            else {
+                runNightHumidityControl(state, t, h);
+                nextFanChannel = state->currentActiveChannel;
             }
         }
-    }
-}
 
     // === ЗАСТОСУВАННЯ ЗМІН ===
     if (nextHeatState != state->currentHeatState) {
@@ -668,14 +553,7 @@ else {
             state->activeCycle == outCold ? "COLD" : 
             state->activeCycle == outNormal ? "NORM" : "HOT");
     } else {
-        const char* nightMode;
-        if (state->coldLockMode) {
-            nightMode = "COLDLOCK";
-        } else if (state->nightHumCtrlActive) {
-            nightMode = "HUM_CTRL";
-        } else {
-            nightMode = "TEMP_ADAPT";
-        }
+        const char* nightMode = state->coldLockMode ? "COLDLOCK" : "HUM_CTRL";
         
         DBG("[%.1f] T:%.1f(%.1f) H:%.1f | Fan:%d | Heat:%d | NIGHT | %s\n",
             millis()/1000.0, t, nightTargetT, 

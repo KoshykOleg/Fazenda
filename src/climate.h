@@ -30,12 +30,10 @@ struct ClimateState {
     unsigned long lastCycleChangeTime = 0;
     
     // НІЧНА ЛОГІКА
-    HumCycle humCycle = humLow;        // Цикл вологості
-    float humHys = 5.0;                 // Гістерезис вологості (%)
-    float lastNightT = NAN;             // Попереднє T для порівняння
-    unsigned long lastNightCheck = 0;   // Таймер перевірки температури
-    bool coldLockMode = false;          // Режим захисту від холоду
-    
+    HumCycle humCycle = humLow;
+    float humHys = 5.0;
+    bool coldLockMode = false;
+
     // Kickstart
     bool kickstartActive = false;
     unsigned long kickstartTime = 0;
@@ -48,6 +46,7 @@ struct ClimateState {
     // Режими
     bool systemOn = true;
     bool manualBoost = false;
+    bool lastBlynkState = false;
     
     // Діагностика
     int dhtRetryCount = 0;
@@ -68,7 +67,6 @@ void selectCycleOnBoot(ClimateState* state, float t);
 void checkCycleTransition(ClimateState* state, int newChannel);
 
 // НІЧНА ЛОГІКА
-void runNightTempAdaptation(ClimateState* state, float t);  // Температурна адаптація
 void runNightHumidityControl(ClimateState* state, float t, float h);  // Вологісний контроль
 void checkColdLockMode(ClimateState* state, float t);  // Перевірка coldLock
 void checkHumCycleTransition(ClimateState* state, int newChannel);

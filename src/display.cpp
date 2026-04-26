@@ -8,16 +8,16 @@ ChannelAnimation channelAnim;
 
 static float oldT = -99.9;
 static float oldH = -1.0;
-static int oldDisplayedChannel = -1;
+static int oldDisplayedChannel = -0;
 static bool oldTooCold = false;
 static bool oldHeat = false;
 static bool oldDay = true;
-static AutoCycle oldDayCycle = outNormal;      // ➕ ДОДАНО
-static HumCycle oldHumCycle = humLow;           // ➕ ДОДАНО
+static AutoCycle oldDayCycle = outNormal;
+static HumCycle oldHumCycle = humLow;
 static bool oldSystemOn = true;
 
 // === ДОПОМІЖНІ ФУНКЦІЇ ===
-int getChannelX(int channelNum, int maxChannels) {  // ✏️ додано maxChannels
+int getChannelX(int channelNum, int maxChannels) {
     if (channelNum < 1 || channelNum > maxChannels) return 0;
     
     int totalWidth = (CHANNEL_WIDTH * maxChannels) + (CHANNEL_SPACING * (maxChannels - 1));
@@ -139,10 +139,10 @@ void drawIndicators(bool coldLock, bool heat, int currentChannel) {
     bool showCold = coldLock || (currentChannel == 0 && oldDisplayedChannel == 1);
     
     tft.fillCircle(COLD_INDICATOR_X, INDICATOR_Y, INDICATOR_RADIUS, 
-                   showCold ? C_CYAN : C_GRAY);
+                   showCold ? C_CYAN : ST77XX_BLACK);
     
     tft.fillCircle(HEAT_INDICATOR_X, INDICATOR_Y, INDICATOR_RADIUS, 
-                   heat ? C_ORANGE : C_GRAY);
+                   heat ? C_ORANGE : ST77XX_BLACK);
 }
 
 // === АНІМАЦІЯ КАНАЛІВ ===
