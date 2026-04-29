@@ -41,5 +41,6 @@ void processChannelAnimation();
 // === ДОПОМІЖНІ ФУНКЦІЇ ===
 void drawFilledTriangle(int centerX, int topY, int size, uint16_t color);
 int getChannelX(int channelNum, int maxChannels);
+void resetDisplayCache();
 
 #endif // DISPLAY_H

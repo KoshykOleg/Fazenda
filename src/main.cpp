@@ -148,7 +148,12 @@ BLYNK_CONNECTED() {
         Blynk.virtualWrite(V11, (climate.dhtRetryCount >= 3) ? 1 : 0);
         Blynk.virtualWrite(V12, (int)climate.humHys);
         Blynk.virtualWrite(V13, (int)(climate.tempOffset * 10));
+        Blynk.virtualWrite(V14, climate.tempOffset);
         Blynk.virtualWrite(V15, (int)(climate.hysteresis * 10));
+        Blynk.virtualWrite(V3, climate.currentActiveChannel);
+        Blynk.virtualWrite(V7, climate.isDay ? 1 : 0);
+        Blynk.virtualWrite(V8, climate.isDay ? 0 : 1);
+        Blynk.virtualWrite(V9, climate.tooColdLock ? 1 : 0);
         Serial.println("All Blynk values synced!");
     });
 }
@@ -172,8 +177,14 @@ BLYNK_WRITE(V6) {
     Serial.printf("New Hum: %.1f → %.1f\n", oldLimit, climate.set_hum_limit);
     
     if (!climate.isDay) {
-        lastReadTime = 0;
-        Serial.println("[V6] Night hum limit updated, climate will re-run immediately");
+        unsigned long now = millis();
+        if (now - lastReadTime < 2000) {
+            lastReadTime = now - 8000;
+            Serial.println("[V6] Night hum limit updated, climate will re-run in 2s");
+        } else {
+            lastReadTime = 0;
+            Serial.println("[V6] Night hum limit updated, climate will re-run immediately");
+        }
     }
 }
 
@@ -282,10 +293,18 @@ void setup() {
         initialH = dht.readHumidity();
     }
 
+    // Читаємо світло 
+    int initialLight = analogRead(LIGHT_SENSOR_PIN);
+    bool initialIsDay = (initialLight < 2000);
+
     pref.begin("fazenda", false);
 
     // === ІНІЦІАЛІЗАЦІЯ CLIMATE МОДУЛЯ ===
     climateInit(&climate);
+
+    climate.isDay = initialIsDay;
+    Serial.printf("[BOOT] Light: %d → %s mode\n",
+        initialLight, climate.isDay ? "DAY" : "NIGHT");
 
     // === ІНІЦІАЛІЗАЦІЯ SPIFFS ===
     Serial.println("\n========== SPIFFS INIT ==========");
@@ -391,6 +410,11 @@ void setup() {
             file.close();
         }
     }
+    updateDisplayNew(climate.lastValidT, climate.lastValidH,
+                    climate.currentActiveChannel, climate.isDay,
+                    climate.currentHeatState, climate.tooColdLock,
+                    climate.activeCycle, climate.humCycle,
+                    climate.systemOn, false);
 }
 
 void loop() {
@@ -457,12 +481,28 @@ updateDisplayNew(climate.lastValidT, climate.lastValidH,
     // Periodic screen recovery (захист від SPI corruption)
     static unsigned long lastFullRedraw = 0;
     if (millis() - lastFullRedraw > 1800000UL) {
-        drawStaticUI();
-        lastShownFan = -99;
-        lastShownT = -999.0;
-        lastShownH = -999.0;
-        lastShownDay = !climate.isDay;
-        lastFullRedraw = millis();
+        if (!climate.kickstartActive && climate.pendingChannel == -1) {
+            tft.fillScreen(ST77XX_BLACK);
+            
+            tft.setTextSize(1);
+            tft.setTextColor(ST77XX_WHITE);
+            tft.setCursor(59, 2);
+            tft.print("Fazenda");
+            tft.drawFastHLine(0, 12, 160, 0x4208);
+
+            resetDisplayCache();
+
+            tft.fillCircle(110, 5, 2, climate.lastBlynkState ? C_GREEN : C_RED);
+
+            lastShownFan = -99;
+            lastShownT = -999.0;
+            lastShownH = -999.0;
+            lastShownDay = !climate.isDay;
+            lastShownSystemOn = !climate.systemOn;
+            
+            lastFullRedraw = millis();
+            Serial.println("[DISPLAY] Periodic full redraw complete");
+        }
     }
 
     // 3. Мережа

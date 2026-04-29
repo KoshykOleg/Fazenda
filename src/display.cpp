@@ -313,3 +313,19 @@ void updateDisplayNew(float t, float h, int channel, bool isDay,
         lastBlynkConnected = blynkConnected;
     }
 }
+
+// === СКИДАННЯ КЕШУ ДИСПЛЕЯ ===
+void resetDisplayCache() {
+    oldT = -99.9;
+    oldH = -1.0;
+    oldDisplayedChannel = -1;
+    oldTooCold = false;
+    oldHeat = false;
+    oldDay = !oldDay;
+    oldDayCycle = outNormal;
+    oldHumCycle = humLow;
+    oldSystemOn = !oldSystemOn;
+    channelAnim.active = false;
+    
+    Serial.println("[DISPLAY] Cache reset");
+}
