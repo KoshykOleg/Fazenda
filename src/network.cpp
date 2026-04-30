@@ -11,6 +11,7 @@
 #include <SPIFFS.h>
 #include <time.h>
 #include <esp_task_wdt.h>
+#include <memory>
 
 // === EXTERN ЗАЛЕЖНОСТІ ===
 extern ClimateState climate;
@@ -22,7 +23,52 @@ extern const int daylightOffset_sec;
 
 // === ГЛОБАЛЬНІ ЗМІННІ ===
 AsyncWebServer server(80);
-bool isAuthenticated = false;
+
+struct Session {
+    uint32_t ip = 0;
+    unsigned long lastActive = 0;
+};
+
+static Session sessions[4];
+static const unsigned long SESSION_TIMEOUT = 1800000UL; // 30 хв
+
+static bool isSessionValid(AsyncWebServerRequest* request) {
+    uint32_t ip = (uint32_t)request->client()->remoteIP();
+    unsigned long now = millis();
+    for (int i = 0; i < 4; i++) {
+        if (sessions[i].ip != 0 && sessions[i].ip == ip) {
+            if (now - sessions[i].lastActive < SESSION_TIMEOUT) {
+                sessions[i].lastActive = now;
+                return true;
+            }
+            sessions[i].ip = 0; // прострочена сесія
+        }
+    }
+    return false;
+}
+
+static void createSession(AsyncWebServerRequest* request) {
+    uint32_t ip = (uint32_t)request->client()->remoteIP();
+    unsigned long now = millis();
+    int oldest = 0;
+    for (int i = 0; i < 4; i++) {
+        if (sessions[i].ip == 0) {
+            sessions[i].ip = ip;
+            sessions[i].lastActive = now;
+            return;
+        }
+        if (sessions[i].lastActive < sessions[oldest].lastActive) oldest = i;
+    }
+    sessions[oldest].ip = ip;
+    sessions[oldest].lastActive = now;
+}
+
+static void destroySession(AsyncWebServerRequest* request) {
+    uint32_t ip = (uint32_t)request->client()->remoteIP();
+    for (int i = 0; i < 4; i++) {
+        if (sessions[i].ip == ip) sessions[i].ip = 0;
+    }
+}
 
 // === ІНІЦІАЛІЗАЦІЯ NTP ЧАСУ ===
 void initTime() {
@@ -62,7 +108,7 @@ void setupWebServer() {
         if (request->hasParam("password", true)) {
             String password = request->getParam("password", true)->value();
             if (password == String(OTA_PASSWORD)) {
-                isAuthenticated = true;
+                createSession(request);
                 request->send(200, "text/plain", "OK");
             } else {
                 request->send(401, "text/plain", "Wrong password");
@@ -73,12 +119,12 @@ void setupWebServer() {
     });
 
     server.on("/logout", HTTP_GET, [](AsyncWebServerRequest *request){
-        isAuthenticated = false;
+        destroySession(request);
         request->redirect("/");
     });
 
     server.on("/update", HTTP_GET, [](AsyncWebServerRequest *request){
-        if (!isAuthenticated) {
+        if (!isSessionValid(request)) {
             request->redirect("/");
             return;
         }
@@ -86,7 +132,7 @@ void setupWebServer() {
     });
 
     server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request){
-        if (!isAuthenticated) {
+        if (!isSessionValid(request)) {
             request->send(401, "text/plain", "Unauthorized");
             return;
         }
@@ -103,7 +149,7 @@ void setupWebServer() {
 
     server.on("/update", HTTP_POST,
         [](AsyncWebServerRequest *request){
-            if (!isAuthenticated) {
+            if (!isSessionValid(request)) {
                 request->send(401, "text/plain", "Unauthorized");
                 return;
             }
@@ -120,7 +166,7 @@ void setupWebServer() {
             }
         },
         [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final){
-            if (!isAuthenticated) return;
+            if (!isSessionValid(request)) return;
 
             if (!index) {
                 Serial.printf("OTA Update Start: %s\n", filename.c_str());
@@ -144,7 +190,7 @@ void setupWebServer() {
     );
 
     server.on("/logs", HTTP_GET, [](AsyncWebServerRequest *request){
-        if (!isAuthenticated) {
+        if (!isSessionValid(request)) {
             request->send(401, "text/plain", "Unauthorized");
             return;
         }
@@ -154,12 +200,14 @@ void setupWebServer() {
             return;
         }
 
-        struct LogStreamCtx {
+        struct LogCtx {
             String stats;
             File file;
+            bool fileOpened = false;
+            ~LogCtx() { if (file) file.close(); }
         };
 
-        LogStreamCtx* ctx = new LogStreamCtx();
+        auto ctx = std::shared_ptr<LogCtx>(new LogCtx());
         ctx->stats  = "=== FAZENDA CLIMATE LOGS ===\n\n";
         ctx->stats += "STATISTICS:\n";
         ctx->stats += "CH1 activations: " + String(logger.ch1_activations) + "\n";
@@ -171,30 +219,22 @@ void setupWebServer() {
         ctx->stats += "Coldlock events: " + String(logger.coldlock_events)  + "\n\n";
         ctx->stats += "=== LOG ENTRIES ===\n";
 
-        AsyncWebServerResponse *response = request->beginChunkedResponse(
+        AsyncWebServerResponse* response = request->beginChunkedResponse(
             "text/plain",
-            [ctx](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
+            [ctx](uint8_t* buffer, size_t maxLen, size_t index) -> size_t {
                 if (index < ctx->stats.length()) {
                     size_t toCopy = min(maxLen, ctx->stats.length() - index);
                     memcpy(buffer, ctx->stats.c_str() + index, toCopy);
                     return toCopy;
                 }
 
-                size_t fileIndex = index - ctx->stats.length();
-
-                if (fileIndex == 0) {
+                if (!ctx->fileOpened) {
+                    ctx->fileOpened = true;
                     ctx->file = SPIFFS.open("/climate.log", FILE_READ);
-                    if (!ctx->file) {
-                        delete ctx;
-                        return 0;
-                    }
+                    if (!ctx->file) return 0;
                 }
 
-                if (!ctx->file.available()) {
-                    ctx->file.close();
-                    delete ctx;
-                    return 0;
-                }
+                if (!ctx->file || !ctx->file.available()) return 0;
 
                 return ctx->file.read(buffer, maxLen);
             }

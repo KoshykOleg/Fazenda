@@ -5,7 +5,6 @@
 
 // === EXTERN ЗМІННІ ===
 extern AsyncWebServer server;
-extern bool isAuthenticated;
 
 // === ФУНКЦІЇ ===
 void initTime();

@@ -5,6 +5,7 @@
 
 struct DataLogger {
     bool storageAvailable = false;
+    bool loggingEnabled = true;
     unsigned long lastPeriodicLog = 0;
     unsigned long lastEventLog = 0;
     const unsigned long PERIODIC_INTERVAL = 120000;

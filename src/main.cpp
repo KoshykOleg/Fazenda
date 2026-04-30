@@ -154,6 +154,7 @@ BLYNK_CONNECTED() {
         Blynk.virtualWrite(V7, climate.isDay ? 1 : 0);
         Blynk.virtualWrite(V8, climate.isDay ? 0 : 1);
         Blynk.virtualWrite(V9, climate.tooColdLock ? 1 : 0);
+        Blynk.virtualWrite(V16, logger.loggingEnabled ? 1 : 0);
         Serial.println("All Blynk values synced!");
     });
 }
@@ -267,6 +268,16 @@ BLYNK_WRITE(V15) {
     Serial.printf("[V15] Hyst: %.2f \xe2\x86\x92 %.2f\n", oldHyst, climate.hysteresis);
 }
 
+BLYNK_WRITE(V16) {
+    logger.loggingEnabled = (param.asInt() == 1);
+    pref.putBool("logEnabled", logger.loggingEnabled);
+    Serial.printf("[V16] Logging: %s\n", logger.loggingEnabled ? "ON" : "OFF");
+
+    if (logger.loggingEnabled) {
+        logEvent("SYSTEM", "Logging enabled via Blynk");
+    }
+}
+
 void setup() {
     Serial.begin(115200);
 
@@ -324,6 +335,7 @@ void setup() {
     climate.hysteresis = constrain(pref.getFloat("hyst", 0.1), 0.1, 4.0);
     climate.humHys = constrain(pref.getFloat("humHys", 5.0), 1.0, 10.0);
     climate.systemOn = pref.getBool("sysOn", true);
+    logger.loggingEnabled = pref.getBool("logEnabled", true);
 
     climate.lastValidT = initialT;
     climate.lastValidH = initialH;
@@ -354,6 +366,13 @@ void setup() {
     if (bootCount > 1 && lastUptime < 60000) {
         Serial.println("WARNING: Last session was very short (<60 sec)!");
     }
+
+    // Відображаємо дані сенсора ДО підключення до мережі
+    updateDisplayNew(climate.lastValidT, climate.lastValidH,
+                    climate.currentActiveChannel, climate.isDay,
+                    climate.currentHeatState, climate.tooColdLock,
+                    climate.activeCycle, climate.humCycle,
+                    climate.systemOn, false);
 
     WiFi.mode(WIFI_STA);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
@@ -410,19 +429,14 @@ void setup() {
             file.close();
         }
     }
-    updateDisplayNew(climate.lastValidT, climate.lastValidH,
-                    climate.currentActiveChannel, climate.isDay,
-                    climate.currentHeatState, climate.tooColdLock,
-                    climate.activeCycle, climate.humCycle,
-                    climate.systemOn, false);
 }
 
 void loop() {
     esp_task_wdt_reset();
 
-    // === ДІАГНОСТИКА (кожні 30 сек) ===
+    // === ДІАГНОСТИКА (кожні 10 хв) ===
     static unsigned long lastBootDiagUpdate = 0;
-    if (millis() - lastBootDiagUpdate > 300000) {
+    if (millis() - lastBootDiagUpdate > 600000) {
         pref.putULong("lastUp", millis());
         pref.putFloat("lastT", climate.lastValidT);
         pref.putInt("lastCh", climate.currentActiveChannel);
@@ -431,13 +445,40 @@ void loop() {
         lastBootDiagUpdate = millis();
     }
 
-    // 1. ПРІОРИТЕТ: Реле + Анімація
+    // Після 2 хв стабільної роботи — лічильник перезавантажень скидається
+    static bool stableRunConfirmed = false;
+    if (!stableRunConfirmed && millis() > 120000) {
+        pref.putUInt("bootCnt", 0);
+        stableRunConfirmed = true;
+        Serial.println("[DIAG] Stable run confirmed, boot counter reset");
+    }
+
+    // 1. ПРІОРИТЕТ: Реле + Анімація (апаратне управління)
     handleRelayQueue(&climate);
-    processChannelAnimation();
-    
+    processChannelAnimation(climate.isDay);
+
+    // 2. Кікстарт (завершення переключення)
+    if (climate.kickstartActive &&
+        (millis() - climate.kickstartTime >= 5000)) {
+        climate.kickstartActive = false;
+
+        if (climate.targetChannelAfterKick != climate.currentActiveChannel) {
+            setFanChannel(&climate, climate.targetChannelAfterKick);
+            Serial.printf("Kickstart finished. Target: %d\n",
+                climate.targetChannelAfterKick);
+        }
+    }
+
+    // 3. Клімат-контроль: читання DHT, керування реле
+    if (millis() - lastReadTime >= CLIMATE_CHECK_INTERVAL) {
+        lastReadTime = millis();
+        runClimateControl(&climate);
+        pushChangesToBlynk();
+    }
+
+    // 4. Оновлення дисплея (одразу після свіжих даних DHT)
     climate.lastBlynkState = Blynk.connected();
 
-    // 2. Оновлення дисплея
     static int lastShownFan = -1;
     static bool lastShownHeat = false;
     static float lastShownT = -999.0;
@@ -460,13 +501,12 @@ void loop() {
         climate.humCycle != lastShownHumCycle ||
         climate.systemOn != lastShownSystemOn) {
 
-        // ОНОВЛЕНИЙ ВИКЛИК
-updateDisplayNew(climate.lastValidT, climate.lastValidH,
-                climate.currentActiveChannel, climate.isDay,
-                climate.currentHeatState, climate.tooColdLock,
-                climate.activeCycle, climate.humCycle,
-                climate.systemOn,
-                Blynk.connected());
+        updateDisplayNew(climate.lastValidT, climate.lastValidH,
+                        climate.currentActiveChannel, climate.isDay,
+                        climate.currentHeatState, climate.tooColdLock,
+                        climate.activeCycle, climate.humCycle,
+                        climate.systemOn,
+                        Blynk.connected());
 
         lastShownFan = climate.currentActiveChannel;
         lastShownHeat = climate.currentHeatState;
@@ -478,41 +518,42 @@ updateDisplayNew(climate.lastValidT, climate.lastValidH,
         lastShownSystemOn = climate.systemOn;
     }
 
-    // Periodic screen recovery (захист від SPI corruption)
+    // 5. Periodic screen recovery (захист від SPI corruption)
     static unsigned long lastFullRedraw = 0;
-    if (millis() - lastFullRedraw > 1800000UL) {
-        if (!climate.kickstartActive && climate.pendingChannel == -1) {
-            tft.fillScreen(ST77XX_BLACK);
-            
-            tft.setTextSize(1);
-            tft.setTextColor(ST77XX_WHITE);
-            tft.setCursor(59, 2);
-            tft.print("Fazenda");
-            tft.drawFastHLine(0, 12, 160, 0x4208);
+    if (millis() - lastFullRedraw > 60000UL) {
+        channelAnim.active = false;
 
-            resetDisplayCache();
+        tft.initR(INITR_BLACKTAB);
+        tft.setRotation(1);
+        tft.fillScreen(ST77XX_BLACK);
 
-            tft.fillCircle(110, 5, 2, climate.lastBlynkState ? C_GREEN : C_RED);
+        tft.setTextSize(1);
+        tft.setTextColor(ST77XX_WHITE);
+        tft.setCursor(59, 2);
+        tft.print("Fazenda");
+        tft.drawFastHLine(0, 12, 160, 0x4208);
 
-            lastShownFan = -99;
-            lastShownT = -999.0;
-            lastShownH = -999.0;
-            lastShownDay = !climate.isDay;
-            lastShownSystemOn = !climate.systemOn;
-            
-            lastFullRedraw = millis();
-            Serial.println("[DISPLAY] Periodic full redraw complete");
-        }
+        resetDisplayCache();
+
+        tft.fillCircle(110, 5, 2, climate.lastBlynkState ? C_GREEN : C_RED);
+
+        lastShownFan = -99;
+        lastShownT = -999.0;
+        lastShownH = -999.0;
+        lastShownDay = !climate.isDay;
+        lastShownSystemOn = !climate.systemOn;
+
+        lastFullRedraw = millis();
+        Serial.println("[DISPLAY] Periodic full redraw complete");
     }
 
-    // 3. Мережа
+    // 6. Мережа (після відображення)
     Blynk.run();
     timer.run();
     checkPreferences();
 
-    // === NTP RETRY ===
+    // 7. NTP retry
     static unsigned long lastNtpRetry = 0;
-
     if (!timeInitialized && WiFi.status() == WL_CONNECTED &&
         millis() - lastNtpRetry > 60000) {
         Serial.println("[NTP] Retrying time sync...");
@@ -522,36 +563,16 @@ updateDisplayNew(climate.lastValidT, climate.lastValidH,
         lastNtpRetry = millis();
     }
 
-    // Періодичне логування
+    // 8. Логування
     logPeriodicData();
 
-    // Очищення логів
     static unsigned long lastCleanup = 0;
     if (millis() - lastCleanup > 3600000) {
         cleanOldLogs();
         lastCleanup = millis();
     }
 
-    // 4. Kickstart
-    if (climate.kickstartActive &&
-        (millis() - climate.kickstartTime >= 5000)) {
-        climate.kickstartActive = false;
-
-        if (climate.targetChannelAfterKick != climate.currentActiveChannel) {
-            setFanChannel(&climate, climate.targetChannelAfterKick);
-            Serial.printf("Kickstart finished. Target: %d\n",
-                climate.targetChannelAfterKick);
-        }
-    }
-
-    // 5. Клімат-контроль
-    if (millis() - lastReadTime >= CLIMATE_CHECK_INTERVAL) {
-        lastReadTime = millis();
-        runClimateControl(&climate);
-        pushChangesToBlynk();
-    }
-
-    // === ОЧИСТИТИ ЛОГИ (Serial 'C') ===
+    // 9. Serial команди
     if (Serial.available()) {
         char cmd = Serial.read();
         if (cmd == 'C' || cmd == 'c') {

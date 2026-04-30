@@ -36,7 +36,7 @@ void updateDisplayNew(float temp, float hum, int channel, bool isDay,
                       bool systemOn, bool blynkConnected);
 
 void startChannelAnimation(int from, int to);
-void processChannelAnimation();
+void processChannelAnimation(bool isDay);
 
 // === ДОПОМІЖНІ ФУНКЦІЇ ===
 void drawFilledTriangle(int centerX, int topY, int size, uint16_t color);

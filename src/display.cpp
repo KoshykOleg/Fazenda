@@ -159,14 +159,14 @@ void startChannelAnimation(int from, int to) {
     Serial.printf("[ANIM] Start: CH%d → CH%d\n", from, to);
 }
 
-void processChannelAnimation() {
+void processChannelAnimation(bool isDay) {
     if (!channelAnim.active) return;
-    
+
     unsigned long now = millis();
     if (now - channelAnim.lastStepTime < CHANNEL_ANIM_DELAY) return;
-    
+
     channelAnim.lastStepTime = now;
-    
+
     if (channelAnim.isIncreasing) {
         channelAnim.currentStep++;
         if (channelAnim.currentStep >= channelAnim.toChannel) {
@@ -180,8 +180,8 @@ void processChannelAnimation() {
             channelAnim.currentStep = channelAnim.toChannel;
         }
     }
-    
-    int maxChannels = oldDay ? 4 : 3;
+
+    int maxChannels = isDay ? 4 : 3;
     drawChannels(channelAnim.currentStep, maxChannels);
     
     if (!channelAnim.active) {

@@ -7,7 +7,6 @@
 
 // === СТРУКТУРА СТАНУ КЛІМАТ-СИСТЕМИ ===
 struct ClimateState {
-    bool nightHumCtrlActive = false;
     // Налаштування (з Preferences)
     float set_temp_day = 25.0;
     float set_hum_limit = 50.0;

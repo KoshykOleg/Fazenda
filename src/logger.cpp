@@ -57,6 +57,7 @@ bool initSPIFFS() {
 // === ЛОГУВАННЯ В ФАЙЛ ===
 void logToFile(const char* message) {
     if (!logger.storageAvailable) return;
+    if (!logger.loggingEnabled) return;
 
     File file = SPIFFS.open("/climate.log", FILE_APPEND);
     if (!file) {
@@ -110,12 +111,12 @@ void logPeriodicData() {
 
 // === ЛОГУВАННЯ ЗМІНИ ВЕНТИЛЯТОРА ===
 void logFanChangeEvent(int oldChannel, int newChannel, float temp) {
-    if (!logger.storageAvailable) return;
-
     if (newChannel == 1) logger.ch1_activations++;
     else if (newChannel == 2) logger.ch2_activations++;
     else if (newChannel == 3) logger.ch3_activations++;
     else if (newChannel == 4) logger.ch4_activations++;
+
+    if (!logger.storageAvailable) return;
 
     char logLine[200];
     snprintf(logLine, sizeof(logLine),

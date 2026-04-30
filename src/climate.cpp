@@ -1,6 +1,5 @@
 // climate.cpp
 #include "climate.h"
-#include "display.h"
 #include <DHT.h>
 #include "logger.h"
 
@@ -354,13 +353,7 @@ void runClimateControl(ClimateState* state) {
 
         state->lastValidT = NAN;
         state->lastValidH = NAN;
-        
-        // ОНОВЛЕНИЙ ВИКЛИК
-        updateDisplayNew(NAN, NAN, state->currentActiveChannel, state->isDay, 
-                        state->currentHeatState, state->tooColdLock, 
-                        state->activeCycle, state->humCycle,
-                        state->systemOn, state->lastBlynkState);
-        
+
         if (state->systemOn) {
             if (state->currentActiveChannel == 0) {
                 DBG_PRINTLN("[DHT ERROR] OFF → Kick → CH3");
@@ -385,8 +378,27 @@ void runClimateControl(ClimateState* state) {
 
     bool wasDay = state->isDay;
 
-    if (state->isDay && lightVal > 2500) state->isDay = false;
-    else if (!state->isDay && lightVal < 1500) state->isDay = true;
+    static int lightNightCount = 0;
+    static int lightDayCount = 0;
+
+    if (state->isDay && lightVal > 2500) {
+        lightNightCount++;
+        lightDayCount = 0;
+        if (lightNightCount >= 3) {
+            state->isDay = false;
+            lightNightCount = 0;
+        }
+    } else if (!state->isDay && lightVal < 1500) {
+        lightDayCount++;
+        lightNightCount = 0;
+        if (lightDayCount >= 3) {
+            state->isDay = true;
+            lightDayCount = 0;
+        }
+    } else {
+        lightNightCount = 0;
+        lightDayCount = 0;
+    }
 
     if (wasDay != state->isDay) {
         if (state->isDay) {

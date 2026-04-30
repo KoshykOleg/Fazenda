@@ -73,7 +73,7 @@ enum HumCycle {
 #define CHANNEL_ANIM_DELAY 70
 
 // === DEBUG МАКРОС ===
-#define DEBUG_CLIMATE 1  // 1=debug ON, 0=debug OFF
+#define DEBUG_CLIMATE 0  // 1=debug ON, 0=debug OFF
 
 #if DEBUG_CLIMATE
   #define DBG(fmt, ...) Serial.printf(fmt, ##__VA_ARGS__)
