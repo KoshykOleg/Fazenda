@@ -248,5 +248,5 @@ void setupWebServer() {
     });
 
     server.begin();
-    Serial.println("[WEB] Server started on port 80");
+    Serial.printf("[WEB] Server started on port 80 | Heap: %u\n", ESP.getFreeHeap());
 }

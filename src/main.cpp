@@ -54,14 +54,27 @@ void checkBlynkStatus() {
     if (WiFi.status() == WL_CONNECTED) {
         if (!Blynk.connected()) {
             Serial.println("[Blynk] Disconnected, reconnecting...");
-            Blynk.connect(0);
+            logEvent("BLYNK", "Reconnect attempt");
+            
+            unsigned long startTime = millis();
+            Blynk.connect(3000);
+            unsigned long elapsed = millis() - startTime;
+            
+            if (Blynk.connected()) {
+                Serial.printf("[Blynk] Reconnected in %lums\n", elapsed);
+                logEvent("BLYNK", "Reconnected");
+            } else {
+                Serial.printf("[Blynk] Timeout after %lums\n", elapsed);
+                logEvent("BLYNK", "Timeout 3s");
+            }
         }
     } else {
         static unsigned long lastWiFiRetry = 0;
         if (millis() - lastWiFiRetry > 30000) {
+            Serial.println("[WiFi] Lost. Retrying...");
+            logEvent("WIFI", "Connection lost, retrying");
             WiFi.reconnect();
             lastWiFiRetry = millis();
-            Serial.println("[WiFi] Lost. Retrying...");
         }
     }
 }
@@ -400,9 +413,20 @@ void setup() {
     esp_task_wdt_add(NULL);
 
     Blynk.config(BLYNK_AUTH_TOKEN, "blynk.cloud", 80);
+
+    unsigned long blynkStartTime = millis();
     Blynk.connect(5000);
+    unsigned long blynkElapsed = millis() - blynkStartTime;
+
     esp_task_wdt_reset();
-    Serial.println(Blynk.connected() ? "Blynk OK" : "Blynk FAILED");
+
+    if (Blynk.connected()) {
+        Serial.printf("[Blynk] Connected in %lums\n", blynkElapsed);
+        logEvent("BOOT", "Blynk connected");
+    } else {
+        Serial.printf("[Blynk] FAILED (timeout 5s, took %lums)\n", blynkElapsed);
+        logEvent("BOOT", "Blynk timeout 5s");
+    }
 
     timer.setInterval(60000L, sendPeriodicData);
     timer.setInterval(30000L, checkBlynkStatus);
@@ -520,7 +544,7 @@ void loop() {
 
     // 5. Periodic screen recovery (захист від SPI corruption)
     static unsigned long lastFullRedraw = 0;
-    if (millis() - lastFullRedraw > 60000UL) {
+    if (millis() - lastFullRedraw > 1800000UL) {
         channelAnim.active = false;
 
         tft.initR(INITR_BLACKTAB);
