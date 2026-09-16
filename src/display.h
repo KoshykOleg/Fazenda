@@ -27,7 +27,7 @@ void drawCycleArrows(AutoCycle dayCycle, HumCycle humCycle, bool isDayMode);
 // ✏️ ОНОВЛЕНА СИГНАТУРА
 void drawChannels(int activeChannel, int maxChannels);
 
-void drawIndicators(bool coldLock, bool heat, int currentChannel);
+void drawIndicators(bool coldLock, bool heat, int currentChannel, bool isDay);
 
 // ✏️ ОНОВЛЕНА СИГНАТУРА 
 void updateDisplayNew(float temp, float hum, int channel, bool isDay, 

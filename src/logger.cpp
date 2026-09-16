@@ -175,7 +175,9 @@ void cleanOldLogs() {
 
         File src = SPIFFS.open("/climate.log", FILE_READ);
         if (!src) return;
-        src.seek(fileSize - 50000);
+        src.seek(fileSize - 50000 - 1);
+        uint8_t ch = 0;
+        while (src.available() && src.read(&ch, 1) == 1 && ch != '\n') {}
 
         File dst = SPIFFS.open("/climate.tmp", FILE_WRITE);
         if (!dst) { src.close(); return; }

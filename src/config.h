@@ -3,7 +3,6 @@
 #define CONFIG_H
 
 // === ВОЛОГІСТЬ НІЧ ===
-#define HUM_OFFSET_LOW  10.0   // CH1: set_hum - 10%
 #define HUM_OFFSET_HIGH  5.0   // CH2/CH3: set_hum + 5%
 
 // === ПІНИ РЕЛЕ ===
@@ -43,7 +42,6 @@ enum HumCycle {
 #define C_GREEN     0x07E0
 #define C_YELLOW    0xFFE0
 #define C_RED       0xF800
-#define C_GRAY      0x2104
 #define C_DARK_GRAY 0x3186
 
 // Денні стрілки (залишаємо)
@@ -66,8 +64,6 @@ enum HumCycle {
 
 #define INDICATOR_Y       (CHANNELS_BASE_Y + CHANNEL_HEIGHT/2)
 #define INDICATOR_RADIUS  6
-#define COLD_INDICATOR_X  10
-#define HEAT_INDICATOR_X  150
 
 // === TIMING АНІМАЦІЇ ===
 #define CHANNEL_ANIM_DELAY 70

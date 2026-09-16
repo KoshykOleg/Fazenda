@@ -7,9 +7,7 @@ struct DataLogger {
     bool storageAvailable = false;
     bool loggingEnabled = true;
     unsigned long lastPeriodicLog = 0;
-    unsigned long lastEventLog = 0;
     const unsigned long PERIODIC_INTERVAL = 120000;
-    const unsigned long LOG_RETENTION_DAYS = 7;
 
     int ch1_activations = 0;
     int ch2_activations = 0;
@@ -19,7 +17,6 @@ struct DataLogger {
     int dht_errors = 0;
     int coldlock_events = 0;
 
-    int lastLoggedChannel = -1;
 };
 
 // === EXTERN ЗМІННІ ===

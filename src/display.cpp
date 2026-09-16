@@ -52,8 +52,8 @@ void drawStaticUI() {
     
     tft.drawFastHLine(0, 12, 160, 0x4208);
 
-    drawChannels(0, 4);  // ✏️ ВИПРАВЛЕНО
-    drawCycleArrows(outNormal, humLow, true);  // ✏️ ВИПРАВЛЕНО
+    drawChannels(0, 4);
+    drawCycleArrows(outNormal, humLow, true);
 }
 
 // === МАЛЮВАННЯ СТРІЛОЧОК ЦИКЛІВ ===
@@ -61,7 +61,7 @@ void drawCycleArrows(AutoCycle dayCycle, HumCycle humCycle, bool isDayMode) {
     tft.fillRect(0, ARROWS_Y, 160, ARROW_SIZE + 2, ST77XX_BLACK);
     
     if (isDayMode) {
-        // ДЕНЬ: 3 стрілки між 4-ма каналами
+        // ДЕНЬ
         int ch1x = getChannelX(1, 4);
         int ch2x = getChannelX(2, 4);
         int ch3x = getChannelX(3, 4);
@@ -79,7 +79,7 @@ void drawCycleArrows(AutoCycle dayCycle, HumCycle humCycle, bool isDayMode) {
         drawFilledTriangle(arrowHotX, ARROWS_Y, ARROW_SIZE, 
                            (dayCycle == outHot) ? ARROW_HOT : C_DARK_GRAY);
     } else {
-        // НІЧ: 2 стрілки між 3-ма каналами
+        // НІЧ
         int ch1x = getChannelX(1, 3);
         int ch2x = getChannelX(2, 3);
         
@@ -96,11 +96,10 @@ void drawCycleArrows(AutoCycle dayCycle, HumCycle humCycle, bool isDayMode) {
 
 // === МАЛЮВАННЯ КАНАЛІВ ===
 void drawChannels(int activeChannel, int maxChannels) {
-    // Очистка зони каналів
     tft.fillRect(0, CHANNELS_BASE_Y, 160, CHANNEL_HEIGHT, ST77XX_BLACK);
     
     if (maxChannels == 4) {
-        // ДЕНЬ: 4 канали
+        // ДЕНЬ
         int ch1x = getChannelX(1, 4);
         int ch2x = getChannelX(2, 4);
         int ch3x = getChannelX(3, 4);
@@ -118,7 +117,7 @@ void drawChannels(int activeChannel, int maxChannels) {
         tft.fillRect(ch4x, CHANNELS_BASE_Y, CHANNEL_WIDTH, CHANNEL_HEIGHT, 
                      (activeChannel >= 4) ? C_RED : C_DARK_GRAY);
     } else {
-        // НІЧ: 3 канали
+        // НІЧ:
         int ch1x = getChannelX(1, 3);
         int ch2x = getChannelX(2, 3);
         int ch3x = getChannelX(3, 3);
@@ -135,13 +134,20 @@ void drawChannels(int activeChannel, int maxChannels) {
 }
 
 // === МАЛЮВАННЯ ІНДИКАТОРІВ ===
-void drawIndicators(bool coldLock, bool heat, int currentChannel) {
+void drawIndicators(bool coldLock, bool heat, int currentChannel, bool isDay) {
+    int maxCh = isDay ? 4 : 3;
+    int ch1Start = getChannelX(1, maxCh);
+    int chLastEnd = getChannelX(maxCh, maxCh) + CHANNEL_WIDTH;
+
+    int coldX = ch1Start / 2;
+    int heatX = (chLastEnd + 160) / 2;
+
     bool showCold = coldLock || (currentChannel == 0 && oldDisplayedChannel == 1);
-    
-    tft.fillCircle(COLD_INDICATOR_X, INDICATOR_Y, INDICATOR_RADIUS, 
+
+    tft.fillCircle(coldX, INDICATOR_Y, INDICATOR_RADIUS,
                    showCold ? C_CYAN : ST77XX_BLACK);
-    
-    tft.fillCircle(HEAT_INDICATOR_X, INDICATOR_Y, INDICATOR_RADIUS, 
+
+    tft.fillCircle(heatX, INDICATOR_Y, INDICATOR_RADIUS,
                    heat ? C_ORANGE : ST77XX_BLACK);
 }
 
@@ -183,7 +189,8 @@ void processChannelAnimation(bool isDay) {
 
     int maxChannels = isDay ? 4 : 3;
     drawChannels(channelAnim.currentStep, maxChannels);
-    
+    drawIndicators(oldTooCold, oldHeat, channelAnim.currentStep, isDay);
+
     if (!channelAnim.active) {
         Serial.printf("[ANIM] Finished at CH%d\n", channelAnim.currentStep);
     }
@@ -253,14 +260,22 @@ void updateDisplayNew(float t, float h, int channel, bool isDay,
         tft.fillRect(0, ARROWS_Y, 160, ARROW_SIZE + CHANNEL_HEIGHT + 20, ST77XX_BLACK);
         
         int maxChannels = isDay ? 4 : 3;
+        channelAnim.active = false;
         drawCycleArrows(dayCycle, humCycle, isDay);
-        drawChannels(channel, maxChannels);
-        
+        if (systemOn) {
+            drawChannels(channel, maxChannels);
+            drawIndicators(coldLock, heat, channel, isDay);
+        } else {
+            oldSystemOn = true;
+        }
+
         oldDay = isDay;
         oldDayCycle = dayCycle;
         oldHumCycle = humCycle;
         oldDisplayedChannel = channel;
-        
+        oldTooCold = coldLock;
+        oldHeat = heat;
+
         Serial.printf("[DISPLAY] Mode changed: %s (CH=%d)\n", isDay ? "DAY" : "NIGHT", maxChannels);
     }
     // 4. СТРІЛОЧКИ ЦИКЛІВ
@@ -273,6 +288,7 @@ void updateDisplayNew(float t, float h, int channel, bool isDay,
     // 5. СИСТЕМА OFF
     if (!systemOn) {
         if (oldSystemOn) {
+            channelAnim.active = false;
             tft.fillRect(0, CHANNELS_BASE_Y - 20, 160, 40, ST77XX_BLACK);
             
             int startX = (160 - 120) / 2;
@@ -288,19 +304,26 @@ void updateDisplayNew(float t, float h, int channel, bool isDay,
             int maxChannels = isDay ? 4 : 3;
             drawCycleArrows(dayCycle, humCycle, isDay);
             drawChannels(channel, maxChannels);
+            drawIndicators(coldLock, heat, channel, isDay);
             oldSystemOn = true;
+            oldTooCold = coldLock;
+            oldHeat = heat;
+            oldDisplayedChannel = channel;
+            channelAnim.active = false;
         }
         
         // 6. КАНАЛИ
         bool channelChanged = (channel != oldDisplayedChannel);
-        if (channelChanged && !channelAnim.active) {
-            startChannelAnimation(oldDisplayedChannel, channel);
+        if (channelChanged) {
+            int from = channelAnim.active ? channelAnim.currentStep : oldDisplayedChannel;
+            channelAnim.active = false;
+            startChannelAnimation(from, channel);
             oldDisplayedChannel = channel;
         }
 
         // 7. ІНДИКАТОРИ
         if (coldLock != oldTooCold || heat != oldHeat || channelChanged) {
-            drawIndicators(coldLock, heat, channel);
+            drawIndicators(coldLock, heat, channel, isDay);
             oldTooCold = coldLock;
             oldHeat = heat;
         }

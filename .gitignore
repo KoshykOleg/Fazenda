@@ -23,3 +23,5 @@ test/
 # OS files
 .DS_Store
 Thumbs.dbs
+test_native/build/
+logs/

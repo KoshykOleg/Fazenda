@@ -8,21 +8,18 @@ extern DHT dht;
 
 // === КОНСТАНТИ ===
 #define RELAY_SWITCH_DELAY 150
-#define KICKSTART_DURATION 5000
-#define CYCLE_CHANGE_DELAY 60000
 
 //  ОНОВЛЕНІ КОНСТАНТИ
 #define COLDLOCK_TEMP_LOW 17.5
-#define COLDLOCK_EXIT_TEMP 18.0
-#define NIGHT_TEMP_OFFSET 4.0
-#define NIGHT_TEMP_CHECK_INTERVAL 60000
-#define HUM_OFFSET 5.0
+#define COLDLOCK_EXIT_TEMP 19.5
+#define HEAT_ON_TEMP 20.0
+#define HEAT_OFF_TEMP 21.0
+#define DHT_ERROR_LIMIT 3
 
 // === ІНІЦІАЛІЗАЦІЯ ===
 void climateInit(ClimateState* state) {
     state->set_temp_day = 25.0;
     state->set_hum_limit = 50.0;
-    state->tempOffset = 0.0;
     state->hysteresis = 0.1;
     
     state->lastValidT = NAN;
@@ -36,7 +33,6 @@ void climateInit(ClimateState* state) {
     // Денні цикли
     state->activeCycle = outNormal;
     state->autoOffset = 0.0;
-    state->lastCycleChangeTime = 0;
     
     //  НІЧНА ЛОГІКА
     state->humCycle = humLow;
@@ -163,7 +159,7 @@ void selectCycleOnBoot(ClimateState* state, float t) {
 }
 
 // === ПЕРЕМИКАННЯ ЦИКЛІВ ===
-void checkCycleTransition(ClimateState* state, int newChannel) {
+void checkCycleTransition(ClimateState* state, int oldChannel, int newChannel) {
     if (!state->isDay) return;
     if (newChannel == 0) {
         DBG("[CYCLE] Fan OFF — cycle stays: %s\n",
@@ -172,26 +168,27 @@ void checkCycleTransition(ClimateState* state, int newChannel) {
         return;
     }
 
-    unsigned long now = millis();    
+    bool up = newChannel > oldChannel;
+    bool down = newChannel < oldChannel;
     AutoCycle oldCycle = state->activeCycle;
 
     if (state->activeCycle == outNormal) {
-        if (newChannel == 1) {
+        if (newChannel == 1 && down) {
             state->activeCycle = outCold;
             state->autoOffset = 0.5;
-        } else if (newChannel == 4) {
+        } else if (newChannel == 4 && up) {
             state->activeCycle = outHot;
             state->autoOffset = -0.5;
         }
     }
     else if (state->activeCycle == outCold) {
-        if (newChannel == 3) {
+        if (newChannel == 3 && up) {
             state->activeCycle = outNormal;
             state->autoOffset = 0.0;
         }
     }
     else if (state->activeCycle == outHot) {
-        if (newChannel == 2) {
+        if (newChannel == 2 && down) {
             state->activeCycle = outNormal;
             state->autoOffset = 0.0;
         }
@@ -203,7 +200,6 @@ void checkCycleTransition(ClimateState* state, int newChannel) {
         const char* newName = (state->activeCycle == outCold) ? "outCold" : 
                               (state->activeCycle == outNormal) ? "outNormal" : "outHot";
         
-        state->lastCycleChangeTime = now;
         
         DBG("[CYCLE] %s → %s (CH%d, offset: %.1f)\n", 
             oldName, newName, newChannel, state->autoOffset);
@@ -220,7 +216,7 @@ void checkCycleTransition(ClimateState* state, int newChannel) {
 // НІЧНА ЛОГІКА
 // === ПЕРЕВІРКА COLDLOCK РЕЖИМУ
 void checkColdLockMode(ClimateState* state, float t) {
-    if (!state->coldLockMode && t < (COLDLOCK_TEMP_LOW - state->hysteresis)) {
+    if (!state->coldLockMode && t < COLDLOCK_TEMP_LOW) {
         state->coldLockMode = true;
         state->tooColdLock = true;  
         logger.coldlock_events++;
@@ -234,15 +230,20 @@ void checkColdLockMode(ClimateState* state, float t) {
         state->coldLockMode = false;
         state->tooColdLock = false;
         logEvent("COLDLOCK", "Deactivated");
-        
-        DBG("[COLDLOCK] Deactivated at T=%.1f°C → Night humidity logic\n", t);
+
+        if (state->isDay) {
+            selectCycleOnBoot(state, t);
+            state->bootCycleSelected = true;
+            DBG("[COLDLOCK] Deactivated at T=%.1f°C → DAY cycle by temperature\n", t);
+        } else {
+            DBG("[COLDLOCK] Deactivated at T=%.1f°C → Night humidity logic\n", t);
+        }
     }
 }
 
 // === ВОЛОГІСНИЙ КОНТРОЛЬ ВНОЧІ ===
 void runNightHumidityControl(ClimateState* state, float t, float h) {
 
-    float H_LOW = state->set_hum_limit - HUM_OFFSET_LOW;
     float H_MID = state->set_hum_limit;
     float H_HIGH = state->set_hum_limit + HUM_OFFSET_HIGH;
     
@@ -332,8 +333,7 @@ void checkHumCycleTransition(ClimateState* state, int newChannel) {
 void runClimateControl(ClimateState* state) {
     if (state->kickstartActive) return;
 
-    DBG(">>> runClimate: set_temp=%.2f offset=%.2f\n", 
-        state->set_temp_day, state->tempOffset);
+    DBG(">>> runClimate: set_temp=%.2f\n", state->set_temp_day);
 
     unsigned long readStart = millis();
     float t = dht.readTemperature();
@@ -342,7 +342,8 @@ void runClimateControl(ClimateState* state) {
     DBG("DHT read: %lu ms\n", millis() - readStart);
 
     // === ОБРОБКА ПОМИЛКИ DHT ===
-    if (isnan(h) || isnan(t)) {
+    bool dhtFailed = isnan(h) || isnan(t);
+    if (dhtFailed) {
         if (state->dhtRetryCount < 100) state->dhtRetryCount++;
         DBG("[DHT ERROR] count: %d\n", state->dhtRetryCount);
 
@@ -353,28 +354,14 @@ void runClimateControl(ClimateState* state) {
 
         state->lastValidT = NAN;
         state->lastValidH = NAN;
-
-        if (state->systemOn) {
-            if (state->currentActiveChannel == 0) {
-                DBG_PRINTLN("[DHT ERROR] OFF → Kick → CH3");
-                startFanWithKick(state, 3);
-            } 
-            else if (state->currentActiveChannel != 3 && state->pendingChannel != 3) {
-                DBG("[DHT ERROR] CH%d → CH3\n", state->currentActiveChannel);
-                setFanChannel(state, 3);
-            }
-            heatControl(state, false);
+    } else {
+        if (state->dhtRetryCount > 0) {
+            DBG("[DHT OK] recovered after %d errors\n", state->dhtRetryCount);
         }
-        
-        return;
+        state->dhtRetryCount = 0;
+        state->lastValidT = t;
+        state->lastValidH = h;
     }
-
-    if (state->dhtRetryCount > 0) {
-        DBG("[DHT OK] recovered after %d errors\n", state->dhtRetryCount);
-    }
-    state->dhtRetryCount = 0;
-    state->lastValidT = t;
-    state->lastValidH = h;
 
     bool wasDay = state->isDay;
 
@@ -405,30 +392,34 @@ void runClimateControl(ClimateState* state) {
             state->activeCycle = outNormal;
             state->autoOffset = 0.0;
 
-            if (state->currentActiveChannel == 0) {
-                startFanWithKick(state, 1);
-            } else if (state->currentActiveChannel != 1) {
-                setFanChannel(state, 1);
+            if (!state->coldLockMode) {
+                if (state->currentActiveChannel == 0) {
+                    startFanWithKick(state, 1);
+                } else if (state->currentActiveChannel != 1) {
+                    setFanChannel(state, 1);
+                }
             }
             
-            DBG_PRINTLN("[MODE] NIGHT → DAY: CH1, wait for set_temp + hyst");
-            logEvent("MODE_CHANGE", "NIGHT→DAY, CH1 standby");
+            DBG("[MODE] NIGHT → DAY: %s\n", state->coldLockMode ? "ColdLock, fan stays OFF" : "CH1 start");
+            logEvent("MODE_CHANGE", state->coldLockMode ? "NIGHT→DAY, ColdLock: fan OFF" : "NIGHT→DAY, CH1 start");
         } else {
             DBG("[MODE] DAY → NIGHT: autoOffset %.1f cleared\n", state->autoOffset);
             state->autoOffset = 0.0;
             state->activeCycle = outNormal;
             state->bootCycleSelected = false;
             
-            if (state->currentActiveChannel == 0) {
-                startFanWithKick(state, 1);
-            } else if (state->currentActiveChannel != 1) {
-                setFanChannel(state, 1);
+            if (!state->coldLockMode) {
+                if (state->currentActiveChannel == 0) {
+                    startFanWithKick(state, 1);
+                } else if (state->currentActiveChannel != 1) {
+                    setFanChannel(state, 1);
+                }
             }
             
-            state->coldLockMode = false;
             state->humCycle = humLow;
             
-            logEvent("MODE_CHANGE", "DAY→NIGHT, CH1 start");
+            DBG("[MODE] DAY → NIGHT: %s\n", state->coldLockMode ? "ColdLock, fan stays OFF" : "CH1 start");
+            logEvent("MODE_CHANGE", state->coldLockMode ? "DAY→NIGHT, ColdLock: fan OFF" : "DAY→NIGHT, CH1 start");
         }
     }
 
@@ -438,14 +429,28 @@ void runClimateControl(ClimateState* state) {
         return;
     }
 
-    bool nextHeatState = false;
-    float nightTargetT = state->set_temp_day - NIGHT_TEMP_OFFSET;
-
-    if (!state->isDay || state->tooColdLock) {
-        if (t < (nightTargetT - state->hysteresis))      nextHeatState = true;
-        else if (t >= nightTargetT)                       nextHeatState = false;
-        else                                              nextHeatState = state->currentHeatState;
+    // === АВАРІЙНИЙ РЕЖИМ DHT ===
+    if (dhtFailed) {
+        int target = -1;
+        if (state->manualBoost) {
+            target = 4;
+        } else if (state->dhtRetryCount >= DHT_ERROR_LIMIT) {
+            target = state->isDay ? 3 : 1;
+        }
+        if (state->dhtRetryCount >= DHT_ERROR_LIMIT && state->currentHeatState) {
+            heatControl(state, false);
+        }
+        if (target > 0 && state->currentActiveChannel != target) {
+            DBG("[DHT ERROR] %s emergency: CH%d → CH%d\n",
+                state->isDay ? "DAY" : "NIGHT", state->currentActiveChannel, target);
+            startFanWithKick(state, target);
+        }
+        return;
     }
+
+    bool nextHeatState = state->currentHeatState;
+    if (t <= HEAT_ON_TEMP)       nextHeatState = true;
+    else if (t >= HEAT_OFF_TEMP) nextHeatState = false;
 
     int nextFanChannel = 0;
     
@@ -454,66 +459,54 @@ void runClimateControl(ClimateState* state) {
     }
     else if (state->isDay) {
         // === ДЕННА ЛОГІКА ===
-        float finalOffset = state->tempOffset + state->autoOffset;
-        float T1 = (state->set_temp_day - 1.0) + finalOffset;
-        float T2 = (state->set_temp_day - 0.5) + finalOffset;
-        float T3 = state->set_temp_day + finalOffset;
-        float T4 = (state->set_temp_day + 0.5) + finalOffset;
-        float T_OFF = state->set_temp_day - 1.0;
+        checkColdLockMode(state, t);
 
-        DBG("[DAY] T:%.1f | Cycle:%s | auto:%.1f | user:%.1f | CH:%d\n",
-            t, 
-            state->activeCycle == outCold ? "COLD" : 
-            state->activeCycle == outNormal ? "NORM" : "HOT",
-            state->autoOffset, state->tempOffset, state->currentActiveChannel);
-        DBG("[DAY] T1=%.1f T2=%.1f T3=%.1f T4=%.1f | OFF<%.1f\n",
-            T1, T2, T3, T4, T_OFF);
-        if (state->currentActiveChannel == 0) {
-            if (t < T_OFF) {
-                nextFanChannel = 0;
-            }
-            else if (t >= state->set_temp_day) {
-                if (state->activeCycle == outCold) {
-                    nextFanChannel = 2;
-                }
-                else if (state->activeCycle == outNormal) {
-                    nextFanChannel = (t >= state->set_temp_day + 0.6) ? 4 : 3;
-                }
-                else {
-                    nextFanChannel = (t >= state->set_temp_day + 0.6) ? 4 : 3;
-                }
+        if (state->coldLockMode) {
+            nextFanChannel = 0;
+            DBG("[DAY] ColdLock: T=%.1f°C, Fan OFF, Heat=ON\n", t);
+        }
+        else {
+            float finalOffset = state->autoOffset;
+            float T1 = (state->set_temp_day - 1.0) + finalOffset;
+            float T2 = (state->set_temp_day - 0.5) + finalOffset;
+            float T3 = state->set_temp_day + finalOffset;
+            float T4 = (state->set_temp_day + 0.5) + finalOffset;
 
+            DBG("[DAY] T:%.1f | Cycle:%s | auto:%.1f | CH:%d\n",
+                t,
+                state->activeCycle == outCold ? "COLD" :
+                state->activeCycle == outNormal ? "NORM" : "HOT",
+                state->autoOffset, state->currentActiveChannel);
+            DBG("[DAY] T1=%.1f T2=%.1f T3=%.1f T4=%.1f\n",
+                T1, T2, T3, T4);
+
+            if (state->currentActiveChannel == 0) {
                 if (!state->bootCycleSelected) {
                     selectCycleOnBoot(state, t);
                     state->bootCycleSelected = true;
-                    logger.overheat_events++;
-                    logEvent("OVERHEAT", "Started with high temp");
+                    if (t >= state->set_temp_day) {
+                        logger.overheat_events++;
+                        logEvent("OVERHEAT", "Started with high temp");
+                    }
                 }
-            } else {
-                nextFanChannel = 0;
+                nextFanChannel = 1;
             }
-        }
-        else if (state->currentActiveChannel == 1) {
-            if (t < T_OFF) nextFanChannel = 0;
-            else if (t >= (T2 + state->hysteresis)) nextFanChannel = 2;
-            else nextFanChannel = 1;
-        }
-        else if (state->currentActiveChannel == 2) {
-            if (t < T_OFF) nextFanChannel = 0;
-            else if (t <= (T2 - state->hysteresis)) nextFanChannel = 1;
-            else if (t >= (T3 + state->hysteresis)) nextFanChannel = 3;
-            else nextFanChannel = 2;
-        }
-        else if (state->currentActiveChannel == 3) {
-            if (t < T_OFF) nextFanChannel = 0;
-            else if (t <= (T3 - state->hysteresis)) nextFanChannel = 2;
-            else if (t >= (T4 + state->hysteresis)) nextFanChannel = 4;
-            else nextFanChannel = 3;
-        }
-        else if (state->currentActiveChannel == 4) {
-            if (t < T_OFF) nextFanChannel = 0;
-            else if (t <= (T4 - state->hysteresis)) nextFanChannel = 3;
-            else nextFanChannel = 4;
+            else if (state->currentActiveChannel == 1) {
+                nextFanChannel = (t >= (T2 + state->hysteresis)) ? 2 : 1;
+            }
+            else if (state->currentActiveChannel == 2) {
+                if (t <= (T2 - state->hysteresis)) nextFanChannel = 1;
+                else if (t >= (T3 + state->hysteresis)) nextFanChannel = 3;
+                else nextFanChannel = 2;
+            }
+            else if (state->currentActiveChannel == 3) {
+                if (t <= (T3 - state->hysteresis)) nextFanChannel = 2;
+                else if (t >= (T4 + state->hysteresis)) nextFanChannel = 4;
+                else nextFanChannel = 3;
+            }
+            else if (state->currentActiveChannel == 4) {
+                nextFanChannel = (t <= (T4 - state->hysteresis)) ? 3 : 4;
+            }
         }
     }
     else {
@@ -538,12 +531,13 @@ void runClimateControl(ClimateState* state) {
     if (!state->kickstartActive) {
         if (nextFanChannel == 0) {
             if (state->currentActiveChannel != 0) {
-                DBG("[FAN OFF] T=%.1f, was CH%d\n", t, state->currentActiveChannel);
-                logFanChangeEvent(state->currentActiveChannel, 0, t);
+                int oldCh = state->currentActiveChannel;
+                DBG("[FAN OFF] T=%.1f, was CH%d\n", t, oldCh);
+                logFanChangeEvent(oldCh, 0, t);
                 setFanChannel(state, 0);
                 
                 if (state->isDay) {
-                    checkCycleTransition(state, 0);
+                    checkCycleTransition(state, oldCh, 0);
                 }
             }
         } else if (state->currentActiveChannel != nextFanChannel) {
@@ -551,8 +545,8 @@ void runClimateControl(ClimateState* state) {
             startFanWithKick(state, nextFanChannel);
             logFanChangeEvent(oldCh, nextFanChannel, t);
             
-            if (state->isDay) {
-                checkCycleTransition(state, nextFanChannel);
+            if (state->isDay && oldCh != 0) {
+                checkCycleTransition(state, oldCh, nextFanChannel);
             }
         }
     }
@@ -560,7 +554,7 @@ void runClimateControl(ClimateState* state) {
     // Лог
     if (state->isDay) {
         DBG("[%.1f] T:%.1f(%.1f) H:%.1f | Fan:%d | Heat:%d | DAY | %s\n",
-            millis()/1000.0, t, state->set_temp_day + state->tempOffset + state->autoOffset, 
+            millis()/1000.0, t, state->set_temp_day + state->autoOffset, 
             h, state->currentActiveChannel, state->currentHeatState,
             state->activeCycle == outCold ? "COLD" : 
             state->activeCycle == outNormal ? "NORM" : "HOT");
@@ -568,7 +562,7 @@ void runClimateControl(ClimateState* state) {
         const char* nightMode = state->coldLockMode ? "COLDLOCK" : "HUM_CTRL";
         
         DBG("[%.1f] T:%.1f(%.1f) H:%.1f | Fan:%d | Heat:%d | NIGHT | %s\n",
-            millis()/1000.0, t, nightTargetT, 
+            millis()/1000.0, t, HEAT_OFF_TEMP, 
             h, state->currentActiveChannel, state->currentHeatState,
             nightMode);
     }

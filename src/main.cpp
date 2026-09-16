@@ -128,7 +128,6 @@ void resetBootDiagnostics() {
     pref.putUInt("bootCnt", 0);
     pref.putFloat("lastT", NAN);
     pref.putInt("lastCh", 0);
-    pref.putFloat("lastOff", 0.0);
     pref.putUInt("lastErr", 0);
     pref.putULong("lastUp", 0);
 
@@ -141,7 +140,6 @@ void checkPreferences() {
     if (prefChanged && (millis() - lastPrefChangeTime >= PREF_WRITE_DELAY)) {
         pref.putFloat("temp", climate.set_temp_day);
         pref.putFloat("hum", climate.set_hum_limit);
-        pref.putFloat("offset", climate.tempOffset);
         pref.putFloat("hyst", climate.hysteresis);
         pref.putFloat("humHys", climate.humHys);
         pref.putBool("sysOn", climate.systemOn);
@@ -160,8 +158,6 @@ BLYNK_CONNECTED() {
         Blynk.virtualWrite(V10, climate.systemOn ? 1 : 0);
         Blynk.virtualWrite(V11, (climate.dhtRetryCount >= 3) ? 1 : 0);
         Blynk.virtualWrite(V12, (int)climate.humHys);
-        Blynk.virtualWrite(V13, (int)(climate.tempOffset * 10));
-        Blynk.virtualWrite(V14, climate.tempOffset);
         Blynk.virtualWrite(V15, (int)(climate.hysteresis * 10));
         Blynk.virtualWrite(V3, climate.currentActiveChannel);
         Blynk.virtualWrite(V7, climate.isDay ? 1 : 0);
@@ -257,20 +253,6 @@ BLYNK_WRITE(V12) {
     Serial.printf("[V12] humHys: %.0f%% → %.0f%%\n", oldHumHys, climate.humHys);
 }
 
-BLYNK_WRITE(V13) {
-    int val = param.asInt();
-    climate.tempOffset = constrain(val, -20, 20) / 10.0;
-
-    prefChanged = true;
-    lastPrefChangeTime = millis();
-
-    Serial.printf("V13: %d \xe2\x86\x92 Offset: %.1f\n", val, climate.tempOffset);
-
-    if (Blynk.connected()) {
-        Blynk.virtualWrite(V14, climate.tempOffset);
-    }
-}
-
 BLYNK_WRITE(V15) {
     int val = param.asInt();
     float oldHyst = climate.hysteresis;
@@ -344,7 +326,6 @@ void setup() {
     // Завантаження налаштувань
     climate.set_temp_day = constrain(pref.getFloat("temp", 25.0), 10.0, 35.0);
     climate.set_hum_limit = constrain(pref.getFloat("hum", 50.0), 30.0, 90.0);
-    climate.tempOffset = constrain(pref.getFloat("offset", 0.0), -2.0, 2.0);
     climate.hysteresis = constrain(pref.getFloat("hyst", 0.1), 0.1, 4.0);
     climate.humHys = constrain(pref.getFloat("humHys", 5.0), 1.0, 10.0);
     climate.systemOn = pref.getBool("sysOn", true);
@@ -359,7 +340,6 @@ void setup() {
 
     float lastTemp = pref.getFloat("lastT", NAN);
     int lastChannel = pref.getInt("lastCh", 0);
-    float lastOffset = pref.getFloat("lastOff", 0.0);
     uint32_t lastErrors = pref.getUInt("lastErr", 0);
     unsigned long lastUptime = pref.getULong("lastUp", 0);
 
@@ -368,7 +348,6 @@ void setup() {
     Serial.printf("Previous uptime: %lu seconds\n", lastUptime / 1000);
     Serial.printf("Last temperature: %.1f\xc2\xb0\x43\n", lastTemp);
     Serial.printf("Last fan channel: %d\n", lastChannel);
-    Serial.printf("Last offset: %.1f\xc2\xb0\x43\n", lastOffset);
     Serial.printf("Last DHT errors: %u\n", lastErrors);
     Serial.println("======================================\n");
 
@@ -445,6 +424,9 @@ void setup() {
 
     setupWebServer();
 
+    pref.remove("offset");
+    pref.remove("lastOff");
+
     // === ІНФО ПРО ЛОГ ===
     if (logger.storageAvailable) {
         File file = SPIFFS.open("/climate.log", FILE_READ);
@@ -465,7 +447,6 @@ void loop() {
         pref.putFloat("lastT", climate.lastValidT);
         pref.putInt("lastCh", climate.currentActiveChannel);
         pref.putUInt("lastErr", climate.dhtRetryCount);
-        pref.putFloat("lastOff", climate.tempOffset);
         lastBootDiagUpdate = millis();
     }
 
@@ -483,7 +464,7 @@ void loop() {
 
     // 2. Кікстарт (завершення переключення)
     if (climate.kickstartActive &&
-        (millis() - climate.kickstartTime >= 5000)) {
+        (millis() - climate.kickstartTime >= KICKSTART_DURATION)) {
         climate.kickstartActive = false;
 
         if (climate.targetChannelAfterKick != climate.currentActiveChannel) {
@@ -505,6 +486,7 @@ void loop() {
 
     static int lastShownFan = -1;
     static bool lastShownHeat = false;
+    static bool lastShownTooCold = false;
     static float lastShownT = -999.0;
     static float lastShownH = -999.0;
     static bool lastShownDay = !climate.isDay;
@@ -519,6 +501,7 @@ void loop() {
 
     if (climate.currentActiveChannel != lastShownFan ||
         climate.currentHeatState != lastShownHeat ||
+        climate.tooColdLock != lastShownTooCold ||
         tChanged || hChanged ||
         climate.isDay != lastShownDay ||
         climate.activeCycle != lastShownCycle ||
@@ -534,6 +517,7 @@ void loop() {
 
         lastShownFan = climate.currentActiveChannel;
         lastShownHeat = climate.currentHeatState;
+        lastShownTooCold = climate.tooColdLock;
         lastShownT = climate.lastValidT;
         lastShownH = climate.lastValidH;
         lastShownDay = climate.isDay;
@@ -544,7 +528,7 @@ void loop() {
 
     // 5. Periodic screen recovery (захист від SPI corruption)
     static unsigned long lastFullRedraw = 0;
-    if (millis() - lastFullRedraw > 1800000UL) {
+    if (millis() - lastFullRedraw > 600000UL) {
         channelAnim.active = false;
 
         tft.initR(INITR_BLACKTAB);

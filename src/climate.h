@@ -5,12 +5,13 @@
 #include <Arduino.h>
 #include "config.h"
 
+#define KICKSTART_DURATION 2000
+
 // === СТРУКТУРА СТАНУ КЛІМАТ-СИСТЕМИ ===
 struct ClimateState {
     // Налаштування (з Preferences)
     float set_temp_day = 25.0;
     float set_hum_limit = 50.0;
-    float tempOffset = 0.0;
     float hysteresis = 0.1;
     
     // Поточний стан сенсорів
@@ -26,7 +27,6 @@ struct ClimateState {
     // Автоматичні цикли (ДЕНЬ)
     AutoCycle activeCycle = outNormal;
     float autoOffset = 0.0;
-    unsigned long lastCycleChangeTime = 0;
     
     // НІЧНА ЛОГІКА
     HumCycle humCycle = humLow;
@@ -63,7 +63,7 @@ void heatControl(ClimateState* state, bool state_heat);
 
 // === АВТОМАТИЧНІ ЦИКЛИ (ДЕНЬ) ===
 void selectCycleOnBoot(ClimateState* state, float t);
-void checkCycleTransition(ClimateState* state, int newChannel);
+void checkCycleTransition(ClimateState* state, int oldChannel, int newChannel);
 
 // НІЧНА ЛОГІКА
 void runNightHumidityControl(ClimateState* state, float t, float h);  // Вологісний контроль
